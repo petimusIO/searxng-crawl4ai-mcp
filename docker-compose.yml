@@ -1,6 +1,9 @@
+# Firecrawl MCP Custom - Self-Hosted Setup
+# This compose file sets up both our MCP server and self-hosted Firecrawl
 version: '3.8'
 
 services:
+  # Redis for Firecrawl
   redis:
     image: redis:alpine
     command: redis-server --requirepass ${REDIS_PASSWORD:-}
@@ -10,32 +13,62 @@ services:
       - redis_data:/data
     networks:
       - firecrawl-net
+    restart: unless-stopped
 
+  # Playwright service with proxy support
   playwright-service:
     image: browserless/chrome:latest
     ports:
       - "3001:3000"
     environment:
       - CONCURRENT=10
-      - TOKEN=your-token
+      - TOKEN=${BROWSER_TOKEN:-your-token}
       - PROXY_URL=${PROXY_URL}
+      - DEFAULT_LAUNCH_ARGS=["--no-sandbox","--disable-setuid-sandbox","--disable-dev-shm-usage"]
     networks:
       - firecrawl-net
+    restart: unless-stopped
+    shm_size: 2gb
 
+  # Our MCP Server (connects to self-hosted Firecrawl)
+  mcp-server:
+    build: 
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "3003:3003"
+    environment:
+      - FIRECRAWL_API_URL=http://firecrawl-api:3002
+      - PROXY_URL=${PROXY_URL}
+      - LOG_LEVEL=info
+    depends_on:
+      - firecrawl-api
+    networks:
+      - firecrawl-net
+    volumes:
+      - ./logs:/app/logs
+    restart: unless-stopped
+
+  # Self-hosted Firecrawl (if available - may need actual Firecrawl setup)
+  # Note: This is a placeholder - actual Firecrawl self-hosting is complex
   firecrawl-api:
-    build: .
+    # For now, we'll build from our own image, but this should be replaced
+    # with actual Firecrawl Docker image when available
+    build:
+      context: .
+      dockerfile: Dockerfile.firecrawl
     ports:
       - "3002:3002"
     environment:
-      - NUM_WORKERS_PER_QUEUE=${NUM_WORKERS_PER_QUEUE}
-      - PORT=${PORT}
-      - HOST=${HOST}
-      - REDIS_URL=${REDIS_URL}
-      - REDIS_RATE_LIMIT_URL=${REDIS_RATE_LIMIT_URL}
-      - PLAYWRIGHT_MICROSERVICE_URL=${PLAYWRIGHT_MICROSERVICE_URL}
+      - NUM_WORKERS_PER_QUEUE=${NUM_WORKERS_PER_QUEUE:-8}
+      - PORT=3002
+      - HOST=0.0.0.0
+      - REDIS_URL=redis://redis:6379
+      - REDIS_RATE_LIMIT_URL=redis://redis:6379
+      - PLAYWRIGHT_MICROSERVICE_URL=http://playwright-service:3000/html
       - PROXY_URL=${PROXY_URL}
-      - BULL_AUTH_KEY=${BULL_AUTH_KEY}
-      - LOGTAIL_KEY=${LOGTAIL_KEY}
+      # Note: Self-hosted Firecrawl may have limitations
+      - DISABLE_AUTH=true  # For self-hosted testing
     depends_on:
       - redis
       - playwright-service
@@ -43,6 +76,7 @@ services:
       - firecrawl-net
     volumes:
       - ./logs:/app/logs
+    restart: unless-stopped
 
 volumes:
   redis_data:

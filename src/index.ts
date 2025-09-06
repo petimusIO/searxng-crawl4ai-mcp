@@ -153,42 +153,72 @@ export class FirecrawlMCPServer {
             },
           },
           {
-            name: 'search_web',
-            description: 'Search the web and optionally scrape results using Firecrawl search API',
+            name: 'map_website',
+            description: 'Get a complete list of URLs from a website (like sitemap discovery)',
             inputSchema: {
               type: 'object',
               properties: {
-                query: {
+                url: {
                   type: 'string',
-                  description: 'The search query',
+                  description: 'The website URL to map',
                 },
                 options: {
                   type: 'object',
                   properties: {
+                    search: {
+                      type: 'string',
+                      description: 'Search term to filter URLs'
+                    },
                     limit: {
                       type: 'number',
-                      description: 'Maximum number of search results',
-                      default: 5
+                      description: 'Maximum number of URLs to return',
+                      default: 5000
                     },
-                    location: {
-                      type: 'string',
-                      description: 'Geographic location for search (e.g., "San Francisco,California,United States")'
-                    },
-                    scrapeResults: {
+                    ignoreSitemap: {
                       type: 'boolean',
-                      description: 'Whether to scrape full content from search results',
-                      default: true
-                    },
-                    formats: {
-                      type: 'array',
-                      items: { type: 'string' },
-                      description: 'Output formats for scraped content',
-                      default: ['markdown']
+                      description: 'Ignore sitemap and crawl manually',
+                      default: false
                     }
                   }
                 }
               },
-              required: ['query'],
+              required: ['url'],
+            },
+          },
+          {
+            name: 'extract_structured_data',
+            description: 'Extract specific structured data from a webpage using AI prompts',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                url: {
+                  type: 'string',
+                  description: 'The URL to extract data from',
+                },
+                prompt: {
+                  type: 'string',
+                  description: 'AI prompt describing what data to extract',
+                },
+                schema: {
+                  type: 'object',
+                  description: 'JSON schema for the expected output structure',
+                }
+              },
+              required: ['url', 'prompt'],
+            },
+          },
+          {
+            name: 'get_crawl_status',
+            description: 'Check the status of a crawl job by ID',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                jobId: {
+                  type: 'string',
+                  description: 'The crawl job ID to check',
+                }
+              },
+              required: ['jobId'],
             },
           }
         ] as Tool[],
@@ -206,8 +236,12 @@ export class FirecrawlMCPServer {
             return await this.handleBatchScrape(args);
           case 'crawl_website':
             return await this.handleCrawlWebsite(args);
-          case 'search_web':
-            return await this.handleSearchWeb(args);
+          case 'map_website':
+            return await this.handleMapWebsite(args);
+          case 'extract_structured_data':
+            return await this.handleExtractStructuredData(args);
+          case 'get_crawl_status':
+            return await this.handleGetCrawlStatus(args);
           default:
             throw new Error(`Unknown tool: ${name}`);
         }
@@ -289,26 +323,68 @@ export class FirecrawlMCPServer {
     };
   }
 
-  private async handleSearchWeb(args: any) {
-    const { query, options = {} } = args;
+  private async handleMapWebsite(args: any) {
+    const { url, options = {} } = args;
     
-    logger.info(`Searching web for: ${query}`);
+    logger.info(`Mapping website: ${url}`);
     
-    const searchOptions: any = {
-      limit: options.limit || 5,
+    const mapOptions: any = {};
+    
+    if (options.search) {
+      mapOptions.search = options.search;
+    }
+    
+    if (options.limit) {
+      mapOptions.limit = options.limit;
+    }
+    
+    if (options.ignoreSitemap) {
+      mapOptions.ignoreSitemap = options.ignoreSitemap;
+    }
+
+    const result = await (this.firecrawl as any).map(url, mapOptions);
+    
+    return {
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify(result, null, 2),
+        },
+      ],
     };
+  }
 
-    if (options.location) {
-      searchOptions.location = options.location;
+  private async handleExtractStructuredData(args: any) {
+    const { url, prompt, schema } = args;
+    
+    logger.info(`Extracting structured data from: ${url}`);
+    
+    const extractOptions: any = {
+      prompt: prompt,
+    };
+    
+    if (schema) {
+      extractOptions.schema = schema;
     }
 
-    if (options.scrapeResults !== false) {
-      searchOptions.scrapeOptions = {
-        formats: options.formats || ['markdown']
-      };
-    }
+    const result = await (this.firecrawl as any).extract(url, extractOptions);
+    
+    return {
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify(result, null, 2),
+        },
+      ],
+    };
+  }
 
-    const result = await (this.firecrawl as any).search(query, searchOptions);
+  private async handleGetCrawlStatus(args: any) {
+    const { jobId } = args;
+    
+    logger.info(`Checking crawl status for job: ${jobId}`);
+
+    const result = await (this.firecrawl as any).getCrawlStatus(jobId);
     
     return {
       content: [

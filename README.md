@@ -84,24 +84,7 @@ This proxy will be used for all web requests to help avoid IP blocks and rate li
 
 ## Available Tools
 
-### 1. Search Web
-Search the web and optionally scrape full content from results:
-```json
-{
-  "tool": "search_web",
-  "arguments": {
-    "query": "latest AI developments 2025",
-    "options": {
-      "limit": 5,
-      "location": "United States",
-      "scrapeResults": true,
-      "formats": ["markdown"]
-    }
-  }
-}
-```
-
-### 2. Scrape URL
+### 1. Scrape URL
 Scrape content from a single URL:
 ```json
 {
@@ -117,7 +100,7 @@ Scrape content from a single URL:
 }
 ```
 
-### 3. Batch Scrape
+### 2. Batch Scrape
 Scrape multiple URLs in batch:
 ```json
 {
@@ -132,7 +115,7 @@ Scrape multiple URLs in batch:
 }
 ```
 
-### 4. Crawl Website
+### 3. Crawl Website
 Crawl an entire website:
 ```json
 {
@@ -145,6 +128,54 @@ Crawl an entire website:
       "includePaths": ["/blog/*"],
       "excludePaths": ["/admin/*"]
     }
+  }
+}
+```
+
+### 4. Map Website
+Generate a complete list of URLs from a website (sitemap discovery):
+```json
+{
+  "tool": "map_website",
+  "arguments": {
+    "url": "https://example.com",
+    "options": {
+      "search": "blog",
+      "limit": 1000,
+      "ignoreSitemap": false
+    }
+  }
+}
+```
+
+### 5. Extract Structured Data
+Extract specific data using AI prompts:
+```json
+{
+  "tool": "extract_structured_data",
+  "arguments": {
+    "url": "https://news-article.com",
+    "prompt": "Extract the article title, author, publication date, and main points",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "title": {"type": "string"},
+        "author": {"type": "string"},
+        "date": {"type": "string"},
+        "points": {"type": "array", "items": {"type": "string"}}
+      }
+    }
+  }
+}
+```
+
+### 6. Get Crawl Status
+Check the status of a long-running crawl job:
+```json
+{
+  "tool": "get_crawl_status",
+  "arguments": {
+    "jobId": "your-crawl-job-id"
   }
 }
 ```

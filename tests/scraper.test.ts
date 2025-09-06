@@ -31,12 +31,14 @@ describe('Firecrawl MCP Server', () => {
       'scrape_url',
       'batch_scrape', 
       'crawl_website',
-      'search_web'
+      'map_website',
+      'extract_structured_data',
+      'get_crawl_status'
     ];
 
     it('should register all required tools', () => {
       mockTools.forEach(tool => {
-        expect(tool).toMatch(/^(scrape_url|batch_scrape|crawl_website|search_web)$/);
+        expect(tool).toMatch(/^(scrape_url|batch_scrape|crawl_website|map_website|extract_structured_data|get_crawl_status)$/);
       });
     });
 

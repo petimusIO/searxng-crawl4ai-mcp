@@ -10,8 +10,7 @@ RUN apk add --no-cache \
     freetype-dev \
     harfbuzz \
     ca-certificates \
-    ttf-freefont \
-    && npm install -g pnpm
+    ttf-freefont
 
 # Set Playwright to use system chromium
 ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
@@ -19,19 +18,18 @@ ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium-browser
 
 # Copy package files
 COPY package*.json ./
-COPY pnpm-lock.yaml ./
 
 # Install dependencies
-RUN pnpm install --frozen-lockfile
+RUN npm install
 
 # Copy source code
 COPY . .
 
 # Build the application
-RUN pnpm run build
+RUN npm run build
 
-# Expose port
-EXPOSE 3002
+# Expose port for MCP server
+EXPOSE 3003
 
-# Start the application
-CMD ["pnpm", "start"]
+# Start the MCP server
+CMD ["npm", "start"]

@@ -1,0 +1,91 @@
+# Placeholder Dockerfile for self-hosted Firecrawl
+# NOTE: This is a simplified version - actual Firecrawl self-hosting is more complex
+# This serves as a testing placeholder until we get actual Firecrawl Docker setup
+
+FROM node:18-alpine
+
+WORKDIR /app
+
+# Install system dependencies
+RUN apk add --no-cache \
+    chromium \
+    nss \
+    freetype \
+    freetype-dev \
+    harfbuzz \
+    ca-certificates \
+    ttf-freefont \
+    python3 \
+    make \
+    g++
+
+# Set Puppeteer to use system chromium
+ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
+ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium-browser
+
+# Create a minimal Express server that mimics Firecrawl API
+RUN npm install express cors dotenv winston axios playwright
+
+# Create a simple server file
+RUN echo 'const express = require("express");\n\
+const cors = require("cors");\n\
+const app = express();\n\
+const PORT = process.env.PORT || 3002;\n\
+\n\
+app.use(cors());\n\
+app.use(express.json());\n\
+\n\
+// Health check\n\
+app.get("/health", (req, res) => {\n\
+  res.json({ status: "ok", message: "Firecrawl API placeholder running" });\n\
+});\n\
+\n\
+// Placeholder endpoints that return test data\n\
+app.post("/v1/scrape", (req, res) => {\n\
+  const { url } = req.body;\n\
+  res.json({\n\
+    success: true,\n\
+    data: {\n\
+      markdown: `# Placeholder Scrape Result\\n\\nThis is a test result for URL: ${url}\\n\\n**Note**: This is a placeholder response from the test Firecrawl server. Actual scraping functionality requires the full Firecrawl implementation.`,\n\
+      html: "<h1>Placeholder Result</h1>",\n\
+      metadata: { url, title: "Test Page", description: "Placeholder response" }\n\
+    }\n\
+  });\n\
+});\n\
+\n\
+app.post("/v1/crawl", (req, res) => {\n\
+  res.json({ success: true, jobId: "test-job-" + Date.now() });\n\
+});\n\
+\n\
+app.post("/v1/map", (req, res) => {\n\
+  const { url } = req.body;\n\
+  res.json({\n\
+    success: true,\n\
+    data: [url + "/page1", url + "/page2", url + "/page3"]\n\
+  });\n\
+});\n\
+\n\
+app.post("/v1/extract", (req, res) => {\n\
+  res.json({\n\
+    success: true,\n\
+    data: { extracted: "placeholder data", note: "This is a test response" }\n\
+  });\n\
+});\n\
+\n\
+app.get("/v1/crawl/:jobId", (req, res) => {\n\
+  res.json({ status: "completed", data: [] });\n\
+});\n\
+\n\
+// 404 handler\n\
+app.use("*", (req, res) => {\n\
+  res.status(404).json({ error: "Endpoint not found in placeholder Firecrawl server" });\n\
+});\n\
+\n\
+app.listen(PORT, "0.0.0.0", () => {\n\
+  console.log(`🔥 Placeholder Firecrawl API running on port ${PORT}`);\n\
+  console.log("⚠️  WARNING: This is a test placeholder, not actual Firecrawl");\n\
+});' > server.js
+
+EXPOSE 3002
+
+CMD ["node", "server.js"]
