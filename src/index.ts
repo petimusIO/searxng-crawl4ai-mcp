@@ -9,12 +9,16 @@ import FirecrawlApp from '@mendable/firecrawl-js';
 import { config } from 'dotenv';
 import { createProxyAgent } from './proxy-agent.js';
 import { logger } from './logger.js';
+import { SearXNGClient } from './searxng-client.js';
+import { Crawl4AIClient } from './crawl4ai-client.js';
 
 config();
 
 export class FirecrawlMCPServer {
   private server: Server;
   private firecrawl: FirecrawlApp;
+  private searxng: SearXNGClient;
+  private crawl4ai: Crawl4AIClient;
   private proxyAgent: any;
 
   constructor() {
@@ -39,6 +43,12 @@ export class FirecrawlMCPServer {
       apiUrl: process.env.FIRECRAWL_API_URL || 'http://localhost:3002',
       // Add proxy configuration if needed
     });
+
+    // Initialize SearXNG client
+    this.searxng = new SearXNGClient(process.env.SEARXNG_URL || 'http://localhost:8081');
+    
+    // Initialize Crawl4AI client
+    this.crawl4ai = new Crawl4AIClient(process.env.CRAWL4AI_URL || 'http://localhost:8001');
 
     this.setupToolHandlers();
   }
@@ -220,6 +230,112 @@ export class FirecrawlMCPServer {
               },
               required: ['jobId'],
             },
+          },
+          {
+            name: 'search_web',
+            description: 'Search the web using SearXNG (truly self-hosted search)',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                query: {
+                  type: 'string',
+                  description: 'The search query',
+                },
+                options: {
+                  type: 'object',
+                  properties: {
+                    engines: {
+                      type: 'string',
+                      description: 'Comma-separated list of engines (e.g., "google,bing")'
+                    },
+                    categories: {
+                      type: 'string',
+                      description: 'Search categories (general, images, news, etc.)'
+                    },
+                    language: {
+                      type: 'string',
+                      description: 'Search language (en, es, fr, etc.)',
+                      default: 'en'
+                    },
+                    limit: {
+                      type: 'number',
+                      description: 'Number of results page (pageno)',
+                      default: 1
+                    }
+                  }
+                }
+              },
+              required: ['query'],
+            },
+          },
+          {
+            name: 'search_and_scrape',
+            description: 'Search the web and automatically scrape top results (combines SearXNG + Crawl4AI)',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                query: {
+                  type: 'string',
+                  description: 'The search query',
+                },
+                options: {
+                  type: 'object',
+                  properties: {
+                    max_results: {
+                      type: 'number',
+                      description: 'Maximum number of search results to scrape',
+                      default: 3
+                    },
+                    engines: {
+                      type: 'string',
+                      description: 'Search engines to use'
+                    },
+                    scrape_formats: {
+                      type: 'array',
+                      items: { type: 'string' },
+                      description: 'Formats for scraped content',
+                      default: ['markdown']
+                    }
+                  }
+                }
+              },
+              required: ['query'],
+            },
+          },
+          {
+            name: 'crawl4ai_scrape',
+            description: 'Scrape a URL using Crawl4AI (better than Firecrawl for self-hosted)',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                url: {
+                  type: 'string',
+                  description: 'The URL to scrape',
+                },
+                options: {
+                  type: 'object',
+                  properties: {
+                    formats: {
+                      type: 'array',
+                      items: { type: 'string' },
+                      description: 'Output formats',
+                      default: ['markdown']
+                    },
+                    wait_for: {
+                      type: 'number',
+                      description: 'Wait time in milliseconds',
+                      default: 0
+                    },
+                    timeout: {
+                      type: 'number',
+                      description: 'Timeout in milliseconds',
+                      default: 30000
+                    }
+                  }
+                }
+              },
+              required: ['url'],
+            },
           }
         ] as Tool[],
       };
@@ -242,6 +358,12 @@ export class FirecrawlMCPServer {
             return await this.handleExtractStructuredData(args);
           case 'get_crawl_status':
             return await this.handleGetCrawlStatus(args);
+          case 'search_web':
+            return await this.handleSearchWeb(args);
+          case 'search_and_scrape':
+            return await this.handleSearchAndScrape(args);
+          case 'crawl4ai_scrape':
+            return await this.handleCrawl4AIScrape(args);
           default:
             throw new Error(`Unknown tool: ${name}`);
         }
@@ -396,10 +518,146 @@ export class FirecrawlMCPServer {
     };
   }
 
+  private async handleSearchWeb(args: any) {
+    const { query, options = {} } = args;
+    
+    logger.info(`Searching web with SearXNG: ${query}`);
+    
+    try {
+      const result = await this.searxng.search(query, {
+        engines: options.engines,
+        categories: options.categories,
+        language: options.language || 'en',
+        pageno: options.limit || 1,
+        format: 'json'
+      });
+      
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify({
+              query: result.query,
+              total_results: result.number_of_results,
+              results: result.results.map(r => ({
+                title: r.title,
+                url: r.url,
+                content: r.content,
+                publishedDate: r.publishedDate
+              })),
+              suggestions: result.suggestions,
+              engine_info: {
+                unresponsive: result.unresponsive_engines
+              }
+            }, null, 2),
+          },
+        ],
+      };
+    } catch (error) {
+      logger.error('SearXNG search failed:', error);
+      throw new Error(`Search failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
+  private async handleSearchAndScrape(args: any) {
+    const { query, options = {} } = args;
+    
+    logger.info(`Search and scrape workflow: ${query}`);
+    
+    try {
+      // First, search with SearXNG
+      const searchResults = await this.searxng.search(query, {
+        engines: options.engines,
+        language: 'en',
+        format: 'json'
+      });
+      
+      if (!searchResults.results || searchResults.results.length === 0) {
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify({
+                query,
+                search_results: 0,
+                scraped_results: [],
+                message: 'No search results found'
+              }, null, 2),
+            },
+          ],
+        };
+      }
+      
+      // Get top URLs to scrape
+      const maxResults = Math.min(options.max_results || 3, 5);
+      const topUrls = searchResults.results.slice(0, maxResults).map(r => r.url);
+      
+      logger.info(`Scraping top ${topUrls.length} results with Crawl4AI`);
+      
+      // Scrape the results
+      const scrapeResults = await this.crawl4ai.batchScrape(topUrls, {
+        formats: options.scrape_formats || ['markdown'],
+        concurrency: 2
+      });
+      
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify({
+              query,
+              search_results: searchResults.number_of_results,
+              scraped_count: scrapeResults.results.filter(r => r.success).length,
+              results: scrapeResults.results.map((scrapeResult, index) => ({
+                search_info: {
+                  title: searchResults.results[index]?.title,
+                  url: scrapeResult.url,
+                  snippet: searchResults.results[index]?.content
+                },
+                scraped_content: scrapeResult.success ? scrapeResult.data : { error: scrapeResult.error },
+                success: scrapeResult.success
+              }))
+            }, null, 2),
+          },
+        ],
+      };
+    } catch (error) {
+      logger.error('Search and scrape workflow failed:', error);
+      throw new Error(`Search and scrape failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
+  private async handleCrawl4AIScrape(args: any) {
+    const { url, options = {} } = args;
+    
+    logger.info(`Scraping with Crawl4AI: ${url}`);
+    
+    try {
+      const result = await this.crawl4ai.scrape(url, {
+        formats: options.formats || ['markdown'],
+        wait_for: options.wait_for || 0,
+        timeout: options.timeout || 30000,
+        proxy_url: process.env.PROXY_URL
+      });
+      
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify(result, null, 2),
+          },
+        ],
+      };
+    } catch (error) {
+      logger.error('Crawl4AI scrape failed:', error);
+      throw new Error(`Crawl4AI scrape failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
   async run() {
     const transport = new StdioServerTransport();
     await this.server.connect(transport);
-    logger.info('Firecrawl MCP Server started with proxy support');
+    logger.info('SearXNG + Crawl4AI MCP Server started with proxy support');
   }
 }
 

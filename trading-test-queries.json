@@ -1,0 +1,79 @@
+{
+  "trading_test_queries": [
+    {
+      "category": "Real-time Market Data",
+      "queries": [
+        "Bitcoin price today September 6 2025 current USD",
+        "SPY ETF real time price September 2025",
+        "EUR/USD forex rate today latest market movement",
+        "Tesla TSLA stock price after hours trading September 2025"
+      ],
+      "test_urls": [
+        "https://finance.yahoo.com/quote/BTC-USD/",
+        "https://finance.yahoo.com/quote/SPY/",
+        "https://www.investing.com/currencies/eur-usd",
+        "https://finance.yahoo.com/quote/TSLA/"
+      ]
+    },
+    {
+      "category": "Trading News & Analysis",
+      "queries": [
+        "Federal Reserve interest rate decision September 2025 trading impact",
+        "cryptocurrency market analysis September 2025 trends",
+        "stock market volatility VIX September 2025 outlook",
+        "oil prices WTI crude September 2025 geopolitical impact"
+      ],
+      "test_urls": [
+        "https://www.marketwatch.com/economy-politics/calendar",
+        "https://cointelegraph.com/",
+        "https://www.cboe.com/tradable_products/vix/",
+        "https://www.investing.com/commodities/crude-oil"
+      ]
+    },
+    {
+      "category": "Technical Analysis & Indicators",
+      "queries": [
+        "Bitcoin RSI oversold levels September 2025 technical analysis",
+        "S&P 500 moving averages support resistance levels 2025",
+        "cryptocurrency fear greed index September 2025 sentiment",
+        "USD DXY dollar index technical outlook September 2025"
+      ],
+      "test_urls": [
+        "https://www.tradingview.com/symbols/BITSTAMP:BTCUSD/technicals/",
+        "https://www.tradingview.com/symbols/SPX/technicals/",
+        "https://alternative.me/crypto/fear-and-greed-index/",
+        "https://www.tradingview.com/symbols/TVC:DXY/"
+      ]
+    },
+    {
+      "category": "Trading Platforms & Tools",
+      "queries": [
+        "best crypto trading platforms 2025 comparison fees",
+        "MetaTrader 5 vs TradingView platform features 2025",
+        "algorithmic trading platforms Python API September 2025",
+        "decentralized exchange DEX volume leaders September 2025"
+      ],
+      "test_urls": [
+        "https://www.coinbase.com/",
+        "https://www.tradingview.com/",
+        "https://alpaca.markets/",
+        "https://dexscreener.com/"
+      ]
+    },
+    {
+      "category": "Market Events & Economic Data",
+      "queries": [
+        "US CPI inflation data September 2025 market reaction",
+        "earnings season Q3 2025 major stock reports calendar",
+        "cryptocurrency ETF approvals September 2025 SEC decisions",
+        "China economic data September 2025 global market impact"
+      ],
+      "test_urls": [
+        "https://www.bls.gov/news.release/cpi.nr0.htm",
+        "https://finance.yahoo.com/calendar/earnings/",
+        "https://www.sec.gov/",
+        "https://www.investing.com/economic-calendar/"
+      ]
+    }
+  ]
+}

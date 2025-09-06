@@ -1,0 +1,83 @@
+# SearXNG Configuration for MCP Server
+use_default_settings: true
+general:
+  debug: false
+  instance_name: "SearXNG MCP"
+  donation_url: false
+  contact_url: false
+  enable_stats: false
+
+search:
+  safe_search: 0
+  autocomplete: "google"
+  default_lang: "en"
+  formats:
+    - html
+    - json
+
+server:
+  port: 8080
+  bind_address: "0.0.0.0"
+  secret_key: "change-this-secret-key-12345"
+  base_url: "http://localhost:8081/"
+  image_proxy: true
+  http_protocol_version: "1.1"
+  method: "POST"
+
+ui:
+  static_use_hash: false
+  default_locale: "en"
+  query_in_title: true
+  infinite_scroll: false
+  center_alignment: false
+  cache_url: "https://web.archive.org/web/"
+  default_theme: simple
+  theme_args:
+    simple_style: auto
+
+# Configure outgoing requests (no proxy for initial testing)
+outgoing:
+  request_timeout: 10.0
+  max_request_timeout: 15.0
+  pool_connections: 100
+  pool_maxsize: 20
+
+# Enabled engines
+engines:
+  # Web search engines
+  - name: google
+    engine: google
+    shortcut: go
+    use_mobile_ui: false
+
+  - name: bing
+    engine: bing
+    shortcut: bi
+
+  - name: duckduckgo
+    engine: duckduckgo
+    shortcut: ddg
+
+  - name: startpage
+    engine: startpage
+    shortcut: sp
+    timeout: 6.0
+
+  - name: qwant
+    engine: qwant
+    shortcut: qw
+    categories: general
+    disabled: false
+
+  # Tech engines
+  - name: github
+    engine: github
+    shortcut: gh
+
+  - name: stackoverflow
+    engine: stackoverflow
+    shortcut: so
+    timeout: 10
+
+redis:
+  url: redis://redis:6379/0

@@ -1,36 +1,71 @@
-# Firecrawl MCP Custom - Self-Hosted Setup
-# This compose file sets up both our MCP server and self-hosted Firecrawl
-version: '3.8'
+# SearXNG + Crawl4AI MCP - Truly Self-Hosted Search & Scrape Stack
 
 services:
-  # Redis for Firecrawl
+  # SearXNG - Open source metasearch engine
+  searxng:
+    image: searxng/searxng:latest
+    container_name: searxng
+    ports:
+      - "8081:8080"
+    environment:
+      - SEARXNG_BASE_URL=http://localhost:8081/
+      - SEARXNG_SECRET=${SEARXNG_SECRET:-$(openssl rand -hex 32)}
+    volumes:
+      - ./searxng-settings.yml:/etc/searxng/settings.yml:ro
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - SETGID
+      - SETUID
+      - DAC_OVERRIDE
+    networks:
+      - search-net
+    restart: unless-stopped
+    healthcheck:
+      test: wget --no-verbose --tries=1 --spider http://localhost:8080/ || exit 1
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Redis for caching
   redis:
     image: redis:alpine
-    command: redis-server --requirepass ${REDIS_PASSWORD:-}
+    command: redis-server --save 30 1 --loglevel warning
     ports:
-      - "6379:6379"
+      - "6380:6379"
     volumes:
       - redis_data:/data
     networks:
-      - firecrawl-net
+      - search-net
     restart: unless-stopped
+    healthcheck:
+      test: redis-cli ping
+      interval: 10s
+      timeout: 3s
+      retries: 3
 
-  # Playwright service with proxy support
-  playwright-service:
-    image: browserless/chrome:latest
+  # Crawl4AI service for web scraping
+  crawl4ai:
+    build:
+      context: .
+      dockerfile: Dockerfile.crawl4ai
+    container_name: crawl4ai
     ports:
-      - "3001:3000"
+      - "8001:8000"
     environment:
-      - CONCURRENT=10
-      - TOKEN=${BROWSER_TOKEN:-your-token}
       - PROXY_URL=${PROXY_URL}
-      - DEFAULT_LAUNCH_ARGS=["--no-sandbox","--disable-setuid-sandbox","--disable-dev-shm-usage"]
+      - CRAWL4AI_LOG_LEVEL=INFO
     networks:
-      - firecrawl-net
+      - search-net
     restart: unless-stopped
-    shm_size: 2gb
+    depends_on:
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./logs:/app/logs
 
-  # Our MCP Server (connects to self-hosted Firecrawl)
+  # Our MCP Server (orchestrates SearXNG + Crawl4AI)
   mcp-server:
     build: 
       context: .
@@ -38,42 +73,17 @@ services:
     ports:
       - "3003:3003"
     environment:
-      - FIRECRAWL_API_URL=http://firecrawl-api:3002
+      - SEARXNG_URL=http://searxng:8080
+      - CRAWL4AI_URL=http://crawl4ai:8000
       - PROXY_URL=${PROXY_URL}
       - LOG_LEVEL=info
     depends_on:
-      - firecrawl-api
+      searxng:
+        condition: service_healthy
+      crawl4ai:
+        condition: service_started
     networks:
-      - firecrawl-net
-    volumes:
-      - ./logs:/app/logs
-    restart: unless-stopped
-
-  # Self-hosted Firecrawl (if available - may need actual Firecrawl setup)
-  # Note: This is a placeholder - actual Firecrawl self-hosting is complex
-  firecrawl-api:
-    # For now, we'll build from our own image, but this should be replaced
-    # with actual Firecrawl Docker image when available
-    build:
-      context: .
-      dockerfile: Dockerfile.firecrawl
-    ports:
-      - "3002:3002"
-    environment:
-      - NUM_WORKERS_PER_QUEUE=${NUM_WORKERS_PER_QUEUE:-8}
-      - PORT=3002
-      - HOST=0.0.0.0
-      - REDIS_URL=redis://redis:6379
-      - REDIS_RATE_LIMIT_URL=redis://redis:6379
-      - PLAYWRIGHT_MICROSERVICE_URL=http://playwright-service:3000/html
-      - PROXY_URL=${PROXY_URL}
-      # Note: Self-hosted Firecrawl may have limitations
-      - DISABLE_AUTH=true  # For self-hosted testing
-    depends_on:
-      - redis
-      - playwright-service
-    networks:
-      - firecrawl-net
+      - search-net
     volumes:
       - ./logs:/app/logs
     restart: unless-stopped
@@ -82,5 +92,5 @@ volumes:
   redis_data:
 
 networks:
-  firecrawl-net:
+  search-net:
     driver: bridge

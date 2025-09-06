@@ -59,3 +59,16 @@ temp/
 
 # Redis dump
 dump.rdb
+
+# MCP local configuration (may contain sensitive paths)
+.mcp.json
+.claude/
+
+# Test files with potentially sensitive data
+test-*.js
+test-*.mjs
+debug-*.js
+debug-*.mjs
+
+# Sensitive configuration examples
+claude-code-mcp-config.json

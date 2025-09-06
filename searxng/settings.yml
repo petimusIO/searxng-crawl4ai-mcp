@@ -1,0 +1,113 @@
+# SearXNG Configuration for MCP Server
+use_default_settings: true
+general:
+  debug: false
+  instance_name: "SearXNG MCP"
+  donation_url: false
+  contact_url: false
+  enable_stats: false
+
+search:
+  safe_search: 0
+  autocomplete: "google"
+  default_lang: "en"
+  formats:
+    - html
+    - json
+
+server:
+  port: 8080
+  bind_address: "0.0.0.0"
+  secret_key: "${SEARXNG_SECRET}"
+  base_url: "${SEARXNG_BASE_URL}"
+  image_proxy: true
+  http_protocol_version: "1.1"
+  method: "POST"
+
+ui:
+  static_use_hash: false
+  default_locale: "en"
+  query_in_title: true
+  infinite_scroll: false
+  center_alignment: false
+  cache_url: "https://web.archive.org/web/"
+  default_theme: simple
+  theme_args:
+    simple_style: auto
+
+# Configure proxy for search requests
+outgoing:
+  request_timeout: 10.0
+  max_request_timeout: 15.0
+  pool_connections: 100
+  pool_maxsize: 20
+  proxies:
+    http: "${PROXY_URL}"
+    https: "${PROXY_URL}"
+
+# Enabled engines
+engines:
+  # Web search engines
+  - name: google
+    engine: google
+    shortcut: go
+    use_mobile_ui: false
+
+  - name: bing
+    engine: bing
+    shortcut: bi
+
+  - name: duckduckgo
+    engine: duckduckgo
+    shortcut: ddg
+
+  - name: startpage
+    engine: startpage
+    shortcut: sp
+    timeout: 6.0
+
+  - name: qwant
+    engine: qwant
+    shortcut: qw
+    categories: general
+    disabled: false
+
+  - name: yandex
+    engine: yandex
+    shortcut: ya
+    disabled: false
+
+  # News engines
+  - name: google news
+    engine: google_news
+    shortcut: gon
+    timeout: 10
+
+  - name: bing news
+    engine: bing_news
+    shortcut: bin
+    timeout: 10
+
+  # Academic engines
+  - name: arxiv
+    engine: arxiv
+    shortcut: arx
+    timeout: 10
+
+  - name: google scholar
+    engine: google_scholar
+    shortcut: gsc
+    timeout: 10
+
+  # Tech engines
+  - name: github
+    engine: github
+    shortcut: gh
+
+  - name: stackoverflow
+    engine: stackoverflow
+    shortcut: so
+    timeout: 10
+
+redis:
+  url: redis://redis:6379/0

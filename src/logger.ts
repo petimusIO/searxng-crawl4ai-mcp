@@ -10,31 +10,36 @@ const logFormat = winston.format.combine(
   winston.format.prettyPrint()
 );
 
+// Create transports array - exclude console for MCP mode
+const transports: winston.transport[] = [
+  new winston.transports.File({
+    filename: path.join(process.cwd(), 'logs', 'error.log'),
+    level: 'error',
+    maxsize: 10485760, // 10MB
+    maxFiles: 5,
+  }),
+  // File transport for all logs
+  new winston.transports.File({
+    filename: path.join(process.cwd(), 'logs', 'combined.log'),
+    maxsize: 10485760, // 10MB
+    maxFiles: 5,
+  })
+];
+
+// Add console transport only if not running as MCP server
+if (!process.env.MCP_MODE) {
+  transports.unshift(new winston.transports.Console({
+    format: winston.format.combine(
+      winston.format.colorize(),
+      winston.format.simple()
+    )
+  }));
+}
+
 export const logger = winston.createLogger({
   level: process.env.LOG_LEVEL || 'info',
   format: logFormat,
-  transports: [
-    // Console transport
-    new winston.transports.Console({
-      format: winston.format.combine(
-        winston.format.colorize(),
-        winston.format.simple()
-      )
-    }),
-    // File transport for errors
-    new winston.transports.File({
-      filename: path.join(process.cwd(), 'logs', 'error.log'),
-      level: 'error',
-      maxsize: 10485760, // 10MB
-      maxFiles: 5,
-    }),
-    // File transport for all logs
-    new winston.transports.File({
-      filename: path.join(process.cwd(), 'logs', 'combined.log'),
-      maxsize: 10485760, // 10MB
-      maxFiles: 5,
-    })
-  ],
+  transports,
 });
 
 // Handle uncaught exceptions

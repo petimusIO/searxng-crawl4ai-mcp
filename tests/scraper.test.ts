@@ -4,7 +4,7 @@ describe('Firecrawl MCP Server', () => {
 
   beforeAll(async () => {
     // Setup test environment
-    process.env.PROXY_URL = 'http://sp1w0pmdkq:SF6so4rdDj3vSq=r3l@dc.decodo.com:10000';
+    process.env.PROXY_URL = 'http://username:password@your-proxy-server.com:10000';
     process.env.REDIS_URL = 'redis://localhost:6379';
   });
 
@@ -16,13 +16,13 @@ describe('Firecrawl MCP Server', () => {
     it('should create proxy agent with provided URL', () => {
       const proxyUrl = process.env.PROXY_URL;
       expect(proxyUrl).toBeDefined();
-      expect(proxyUrl).toContain('dc.decodo.com:10000');
+      expect(proxyUrl).toContain('your-proxy-server.com:10000');
     });
 
     it('should mask credentials in logs', () => {
-      const proxyUrl = 'http://sp1w0pmdkq:SF6so4rdDj3vSq=r3l@dc.decodo.com:10000';
+      const proxyUrl = 'http://username:password@your-proxy-server.com:10000';
       const masked = proxyUrl.replace(/\/\/.*@/, '//***@');
-      expect(masked).toBe('http://***@dc.decodo.com:10000');
+      expect(masked).toBe('http://***@your-proxy-server.com:10000');
     });
   });
 
@@ -33,12 +33,15 @@ describe('Firecrawl MCP Server', () => {
       'crawl_website',
       'map_website',
       'extract_structured_data',
-      'get_crawl_status'
+      'get_crawl_status',
+      'search_web',
+      'search_and_scrape',
+      'crawl4ai_scrape'
     ];
 
     it('should register all required tools', () => {
       mockTools.forEach(tool => {
-        expect(tool).toMatch(/^(scrape_url|batch_scrape|crawl_website|map_website|extract_structured_data|get_crawl_status)$/);
+        expect(tool).toMatch(/^(scrape_url|batch_scrape|crawl_website|map_website|extract_structured_data|get_crawl_status|search_web|search_and_scrape|crawl4ai_scrape)$/);
       });
     });
 
