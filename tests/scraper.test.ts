@@ -30,12 +30,13 @@ describe('Firecrawl MCP Server', () => {
     const mockTools = [
       'scrape_url',
       'batch_scrape', 
-      'crawl_website'
+      'crawl_website',
+      'search_web'
     ];
 
     it('should register all required tools', () => {
       mockTools.forEach(tool => {
-        expect(tool).toMatch(/^(scrape_url|batch_scrape|crawl_website)$/);
+        expect(tool).toMatch(/^(scrape_url|batch_scrape|crawl_website|search_web)$/);
       });
     });
 

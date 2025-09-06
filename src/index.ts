@@ -151,6 +151,45 @@ export class FirecrawlMCPServer {
               },
               required: ['url'],
             },
+          },
+          {
+            name: 'search_web',
+            description: 'Search the web and optionally scrape results using Firecrawl search API',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                query: {
+                  type: 'string',
+                  description: 'The search query',
+                },
+                options: {
+                  type: 'object',
+                  properties: {
+                    limit: {
+                      type: 'number',
+                      description: 'Maximum number of search results',
+                      default: 5
+                    },
+                    location: {
+                      type: 'string',
+                      description: 'Geographic location for search (e.g., "San Francisco,California,United States")'
+                    },
+                    scrapeResults: {
+                      type: 'boolean',
+                      description: 'Whether to scrape full content from search results',
+                      default: true
+                    },
+                    formats: {
+                      type: 'array',
+                      items: { type: 'string' },
+                      description: 'Output formats for scraped content',
+                      default: ['markdown']
+                    }
+                  }
+                }
+              },
+              required: ['query'],
+            },
           }
         ] as Tool[],
       };
@@ -167,6 +206,8 @@ export class FirecrawlMCPServer {
             return await this.handleBatchScrape(args);
           case 'crawl_website':
             return await this.handleCrawlWebsite(args);
+          case 'search_web':
+            return await this.handleSearchWeb(args);
           default:
             throw new Error(`Unknown tool: ${name}`);
         }
@@ -237,6 +278,37 @@ export class FirecrawlMCPServer {
     };
 
     const result = await (this.firecrawl as any).crawl(url, crawlOptions);
+    
+    return {
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify(result, null, 2),
+        },
+      ],
+    };
+  }
+
+  private async handleSearchWeb(args: any) {
+    const { query, options = {} } = args;
+    
+    logger.info(`Searching web for: ${query}`);
+    
+    const searchOptions: any = {
+      limit: options.limit || 5,
+    };
+
+    if (options.location) {
+      searchOptions.location = options.location;
+    }
+
+    if (options.scrapeResults !== false) {
+      searchOptions.scrapeOptions = {
+        formats: options.formats || ['markdown']
+      };
+    }
+
+    const result = await (this.firecrawl as any).search(query, searchOptions);
     
     return {
       content: [

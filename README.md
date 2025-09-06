@@ -84,7 +84,24 @@ This proxy will be used for all web requests to help avoid IP blocks and rate li
 
 ## Available Tools
 
-### 1. Scrape URL
+### 1. Search Web
+Search the web and optionally scrape full content from results:
+```json
+{
+  "tool": "search_web",
+  "arguments": {
+    "query": "latest AI developments 2025",
+    "options": {
+      "limit": 5,
+      "location": "United States",
+      "scrapeResults": true,
+      "formats": ["markdown"]
+    }
+  }
+}
+```
+
+### 2. Scrape URL
 Scrape content from a single URL:
 ```json
 {
@@ -100,7 +117,7 @@ Scrape content from a single URL:
 }
 ```
 
-### 2. Batch Scrape
+### 3. Batch Scrape
 Scrape multiple URLs in batch:
 ```json
 {
@@ -115,7 +132,7 @@ Scrape multiple URLs in batch:
 }
 ```
 
-### 3. Crawl Website
+### 4. Crawl Website
 Crawl an entire website:
 ```json
 {
