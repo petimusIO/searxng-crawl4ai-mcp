@@ -11,6 +11,8 @@ import { createProxyAgent } from './proxy-agent.js';
 import { logger } from './logger.js';
 import { SearXNGClient } from './searxng-client.js';
 import { Crawl4AIClient } from './crawl4ai-client.js';
+import express from 'express';
+import http from 'http';
 
 config();
 
@@ -20,6 +22,10 @@ export class FirecrawlMCPServer {
   private searxng: SearXNGClient;
   private crawl4ai: Crawl4AIClient;
   private proxyAgent: any;
+  // network server state (optional)
+  private expressApp?: express.Application;
+  private httpServer?: http.Server;
+  private sseSessions = new Map<string, any>();
 
   constructor() {
     this.server = new Server(
@@ -51,6 +57,102 @@ export class FirecrawlMCPServer {
     this.crawl4ai = new Crawl4AIClient(process.env.CRAWL4AI_URL || 'http://localhost:8001');
 
     this.setupToolHandlers();
+
+    // Optional: start a small internal HTTP server that exposes
+    // - GET /health
+    // - GET /mcp/sse  (accepts SSE connections and registers an MCP transport)
+    // - POST /mcp/sse (receive client POST messages for SSE sessions)
+    // - POST /mcp/tool/:name (convenience proxy for common tools)
+    try {
+      const port = Number(process.env.MCP_HTTP_PORT || process.env.MCP_PORT || 3003);
+      const token = process.env.MCP_INTERNAL_TOKEN;
+
+      const app = express();
+      app.use(express.json({ limit: '1mb' }));
+
+      if (token) {
+        app.use((req, res, next) => {
+          const auth = String(req.headers.authorization || '');
+          if (!auth || auth !== `Bearer ${token}`) {
+            logger.warn('mcp:http:auth:deny', { path: req.path, ip: req.ip });
+            return res.status(401).json({ ok: false, error: 'unauthorized' });
+          }
+          next();
+        });
+      }
+
+      app.get('/health', async (_req, res) => {
+        const searx = await this.searxng.healthCheck().catch(() => false);
+        const crawl = await this.crawl4ai.healthCheck().catch(() => false);
+        return res.status(200).json({ ok: true, searxng: searx, crawl4ai: crawl });
+      });
+
+      app.get(['/mcp/sse', '/sse'], async (req, res) => {
+        try {
+          const { SSEServerTransport } = await import('@modelcontextprotocol/sdk/server/sse.js');
+          const endpoint = process.env.MCP_SSE_PATH || '/mcp/sse';
+          const transport = new SSEServerTransport(endpoint, res as any);
+
+          // start() will initialize the SSE response
+          await transport.start();
+
+          // register the transport for incoming POST messages
+          this.sseSessions.set(String(transport.sessionId), transport);
+
+          transport.onclose = () => {
+            logger.info('mcp:http:sse:closed', { sessionId: transport.sessionId });
+            this.sseSessions.delete(String(transport.sessionId));
+          };
+
+          await this.server.connect(transport);
+          logger.info('mcp:http:sse:connected', { sessionId: transport.sessionId });
+        } catch (err) {
+          logger.error('mcp:http:sse:error', { message: String(err) });
+          res.status(500).end();
+        }
+      });
+
+      app.post(['/mcp/sse', '/sse', '/mcp/sse/:sessionId'], async (req, res) => {
+        const sessionId = req.params.sessionId || req.query.sessionId || req.headers['x-session-id'];
+        const transport = sessionId ? this.sseSessions.get(String(sessionId)) : undefined;
+        if (!transport) return res.status(404).json({ ok: false, error: 'session not found' });
+
+        try {
+          await transport.handlePostMessage(req as any, res as any);
+        } catch (err) {
+          logger.error('mcp:http:sse:post:error', { message: String(err) });
+          res.status(500).json({ ok: false, error: 'post error' });
+        }
+      });
+
+      app.post(['/mcp/tool/:name', '/mcp/call'], async (req, res) => {
+        const toolName = req.params.name || req.body?.name;
+        const args = req.body?.arguments || req.body?.args || req.body?.params || {};
+        if (!toolName) return res.status(400).json({ ok: false, error: 'tool name required' });
+
+        try {
+          switch (toolName) {
+            case 'search_web':
+              return res.json({ ok: true, result: await this.handleSearchWeb(args) });
+            case 'crawl4ai_scrape':
+            case 'scrape_url':
+              return res.json({ ok: true, result: await this.handleCrawl4AIScrape(args) });
+            case 'search_and_scrape':
+              return res.json({ ok: true, result: await this.handleSearchAndScrape(args) });
+            default:
+              return res.status(404).json({ ok: false, error: 'tool not supported via HTTP proxy' });
+          }
+        } catch (err: any) {
+          logger.error('mcp:http:tool:error', { tool: toolName, message: err?.message || String(err) });
+          return res.status(500).json({ ok: false, error: err?.message || 'tool error' });
+        }
+      });
+
+      this.expressApp = app;
+      this.httpServer = app.listen(port, () => logger.info('mcp:http:server:listen', { port }));
+    } catch (err) {
+      logger.warn('mcp:http:disabled', { reason: String(err) });
+    }
   }
 
   private setupToolHandlers() {
