@@ -21,6 +21,7 @@ services:
       - DAC_OVERRIDE
     networks:
       - search-net
+      - coolify
     restart: unless-stopped
     healthcheck:
       test: wget --no-verbose --tries=1 --spider http://localhost:8080/ || exit 1
@@ -58,6 +59,7 @@ services:
       - CRAWL4AI_LOG_LEVEL=INFO
     networks:
       - search-net
+      - coolify
     restart: unless-stopped
     depends_on:
       redis:
