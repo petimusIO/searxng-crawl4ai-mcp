@@ -210,6 +210,26 @@ Combined workflow that searches for information, then automatically scrapes cont
 
 ## ⚡ **Performance Tips**
 
+### Enabling remote MCP connections (quick & simple)
+
+If you want `seek-api` to connect to this MCP server in production (fastest path):
+
+- Start the MCP server as its own container and enable the SSE or streamable-HTTP transport via env vars on the MCP container.
+  - `MCP_SSE_PORT=3001` — exposes an SSE endpoint at `/sse` (connect with `MCP_SEARXNG_URL` in `seek-api`).
+  - `MCP_STREAMABLE_PORT=3002` — exposes a streamable-HTTP MCP endpoint at `/mcp`.
+- In `seek-api` set `MCP_SEARXNG_URL` to the public-internal URL (example: `http://searxng-mcp:3001/sse`).
+- Keep MCP on an internal network (do NOT expose the MCP ports to the public internet).
+
+Quick example (docker-compose):
+
+- MCP service (expose internal port only):
+  - `MCP_SSE_PORT: 3001`
+- Seek API service:
+  - `MCP_SEARXNG_URL: http://searxng-mcp:3001/sse`
+
+Security note: this is the fastest way to get MCP in prod and works safely if both containers sit on a private network (Coolify or VNet). Add token checks / mTLS later for extra protection.
+
+
 ### Optimize search_web:
 - Use specific queries for better results
 - Limit maxResults to avoid overwhelming data

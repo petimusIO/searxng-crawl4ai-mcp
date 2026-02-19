@@ -1,5 +1,6 @@
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+// Optional network transports (dynamically imported when enabled)
 import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
@@ -11,7 +12,8 @@ import { createProxyAgent } from './proxy-agent.js';
 import { logger } from './logger.js';
 import { SearXNGClient } from './searxng-client.js';
 import { Crawl4AIClient } from './crawl4ai-client.js';
-
+import express from 'express';
+import http from 'http';
 config();
 
 export class FirecrawlMCPServer {
@@ -20,6 +22,11 @@ export class FirecrawlMCPServer {
   private searxng: SearXNGClient;
   private crawl4ai: Crawl4AIClient;
   private proxyAgent: any;
+
+  // HTTP/SSE support for running MCP as a network service
+  private expressApp?: express.Application;
+  private httpServer?: http.Server;
+  private sseTransports = new Map<string, any>();
 
   constructor() {
     this.server = new Server(
@@ -37,12 +44,24 @@ export class FirecrawlMCPServer {
     // Initialize proxy agent
     this.proxyAgent = createProxyAgent(process.env.PROXY_URL);
     
-    // Initialize Firecrawl with proxy support
-    this.firecrawl = new FirecrawlApp({
-      apiKey: process.env.FIRECRAWL_API_KEY || '',
-      apiUrl: process.env.FIRECRAWL_API_URL || 'http://localhost:3002',
-      // Add proxy configuration if needed
-    });
+    // Initialize Firecrawl with proxy support (use a stub if API key is missing)
+    if (process.env.FIRECRAWL_API_KEY) {
+      this.firecrawl = new FirecrawlApp({
+        apiKey: process.env.FIRECRAWL_API_KEY || '',
+        apiUrl: process.env.FIRECRAWL_API_URL || 'http://localhost:3002',
+      });
+    } else {
+      // Start with a minimal stub so the MCP server can boot without a Firecrawl API key.
+      // The stub throws a clear error when any scraping method is invoked.
+      logger.warn('FIRECRAWL_API_KEY not set — Firecrawl features will fail until configured');
+      this.firecrawl = {
+        scrape: async () => { throw new Error('FIRECRAWL_API_KEY not set'); },
+        batchScrape: async () => { throw new Error('FIRECRAWL_API_KEY not set'); },
+        crawl: async () => { throw new Error('FIRECRAWL_API_KEY not set'); },
+        extract: async () => { throw new Error('FIRECRAWL_API_KEY not set'); },
+        getCrawlStatus: async () => { throw new Error('FIRECRAWL_API_KEY not set'); },
+      } as any;
+    }
 
     // Initialize SearXNG client
     this.searxng = new SearXNGClient(process.env.SEARXNG_URL || 'http://localhost:8081');
@@ -51,6 +70,114 @@ export class FirecrawlMCPServer {
     this.crawl4ai = new Crawl4AIClient(process.env.CRAWL4AI_URL || 'http://localhost:8001');
 
     this.setupToolHandlers();
+
+    // Emit non-sensitive startup environment details to help debugging restarts
+    logger.info('mcp:startup', {
+      pid: process.pid,
+      node: process.version,
+      searxngUrl: process.env.SEARXNG_URL || null,
+      crawl4aiUrl: process.env.CRAWL4AI_URL || null,
+      firecrawlConfigured: !!process.env.FIRECRAWL_API_KEY,
+      proxyConfigured: !!process.env.PROXY_URL,
+      mcpMode: !!process.env.MCP_MODE,
+      env: process.env.NODE_ENV || 'development',
+    });
+
+    // --- optional HTTP + SSE server so MCP can be reached by other services (Coolify) ---
+    try {
+      const port = Number(process.env.MCP_HTTP_PORT || process.env.MCP_PORT || 3003);
+      const app = express();
+      app.use(express.json({ limit: '1mb' }));
+
+      // lightweight token middleware (optional)
+      const token = process.env.MCP_INTERNAL_TOKEN;
+      if (token) {
+        app.use((req, res, next) => {
+          const auth = String(req.headers.authorization || '');
+          if (!auth || auth !== `Bearer ${token}`) {
+            logger.warn('mcp:http:auth:deny', { path: req.path, ip: req.ip });
+            return res.status(401).json({ ok: false, error: 'unauthorized' });
+          }
+          next();
+        });
+      }
+
+      // health endpoint
+      app.get('/health', async (req, res) => {
+        const searx = await this.searxng.healthCheck().catch(() => false);
+        const crawl4ai = await this.crawl4ai.healthCheck().catch(() => false);
+        return res.status(200).json({ ok: true, searxng: searx, crawl4ai });
+      });
+
+      // SSE acceptor — creates a transport for every incoming SSE connection
+      app.get(['/mcp/sse', '/sse'], async (req, res) => {
+        try {
+          const { SSEServerTransport } = await import('@modelcontextprotocol/sdk/server/sse.js');
+          const endpoint = process.env.MCP_SSE_PATH || '/mcp/sse';
+          const transport = new SSEServerTransport(endpoint, res as any);
+
+          // start() attaches to the response and defines a sessionId
+          await transport.start();
+
+          // register transport so POST messages can be routed to it
+          this.sseTransports.set(String(transport.sessionId), transport);
+
+          transport.onclose = () => {
+            logger.info('mcp:http:sse:closed', { sessionId: transport.sessionId });
+            this.sseTransports.delete(String(transport.sessionId));
+          };
+
+          await this.server.connect(transport);
+          logger.info('mcp:http:sse:connected', { sessionId: transport.sessionId });
+        } catch (err) {
+          logger.error('mcp:http:sse:error', { message: String(err) });
+          res.status(500).end();
+        }
+      });
+
+      // POST handler used by SSE clients to send messages back to server
+      app.post(['/mcp/sse', '/sse', '/mcp/sse/:sessionId'], async (req, res) => {
+        const sessionId = (req.params.sessionId || req.query.sessionId || req.headers['x-session-id']);
+        const transport = sessionId ? this.sseTransports.get(String(sessionId)) : undefined;
+        if (!transport) return res.status(404).json({ ok: false, error: 'session not found' });
+
+        try {
+          await transport.handlePostMessage(req as any, res as any);
+        } catch (err) {
+          logger.error('mcp:http:sse:post:error', { message: String(err) });
+          res.status(500).json({ ok: false, error: 'post error' });
+        }
+      });
+
+      // Optional: simple HTTP proxy to call a subset of tools directly (convenience for non-MCP clients)
+      app.post(['/mcp/tool/:name', '/mcp/call'], async (req, res) => {
+        const toolName = req.params.name || req.body?.name;
+        const args = req.body?.arguments || req.body?.args || req.body?.params || {};
+        if (!toolName) return res.status(400).json({ ok: false, error: 'tool name required' });
+
+        try {
+          switch (toolName) {
+            case 'search_web':
+              return res.json({ ok: true, result: await this.handleSearchWeb(args) });
+            case 'crawl4ai_scrape':
+            case 'scrape_url':
+              return res.json({ ok: true, result: await this.handleCrawl4AIScrape(args) });
+            case 'search_and_scrape':
+              return res.json({ ok: true, result: await this.handleSearchAndScrape(args) });
+            default:
+              return res.status(404).json({ ok: false, error: 'tool not supported via HTTP proxy' });
+          }
+        } catch (err: any) {
+          logger.error('mcp:http:tool:error', { tool: toolName, message: err?.message || String(err) });
+          return res.status(500).json({ ok: false, error: err?.message || 'tool error' });
+        }
+      });
+
+      this.expressApp = app;
+      this.httpServer = app.listen(port, () => logger.info('mcp:http:server:listen', { port }));
+    } catch (err) {
+      logger.warn('mcp:http:disabled', { reason: String(err) });
+    }
   }
 
   private setupToolHandlers() {
@@ -343,32 +470,59 @@ export class FirecrawlMCPServer {
 
     this.server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const { name, arguments: args } = request.params;
+      const start = Date.now();
+      const argsSummary = (() => {
+        try { return JSON.stringify(args).slice(0, 1024); } catch { return '<unserializable>'; }
+      })();
+
+      logger.info('mcp:tool:request', { tool: name, argsSummary, pid: process.pid });
 
       try {
+        let result: any;
+
         switch (name) {
           case 'scrape_url':
-            return await this.handleScrapeUrl(args);
+            result = await this.handleScrapeUrl(args);
+            break;
           case 'batch_scrape':
-            return await this.handleBatchScrape(args);
+            result = await this.handleBatchScrape(args);
+            break;
           case 'crawl_website':
-            return await this.handleCrawlWebsite(args);
+            result = await this.handleCrawlWebsite(args);
+            break;
           case 'map_website':
-            return await this.handleMapWebsite(args);
+            result = await this.handleMapWebsite(args);
+            break;
           case 'extract_structured_data':
-            return await this.handleExtractStructuredData(args);
+            result = await this.handleExtractStructuredData(args);
+            break;
           case 'get_crawl_status':
-            return await this.handleGetCrawlStatus(args);
+            result = await this.handleGetCrawlStatus(args);
+            break;
           case 'search_web':
-            return await this.handleSearchWeb(args);
+            result = await this.handleSearchWeb(args);
+            break;
           case 'search_and_scrape':
-            return await this.handleSearchAndScrape(args);
+            result = await this.handleSearchAndScrape(args);
+            break;
           case 'crawl4ai_scrape':
-            return await this.handleCrawl4AIScrape(args);
+            result = await this.handleCrawl4AIScrape(args);
+            break;
           default:
             throw new Error(`Unknown tool: ${name}`);
         }
-      } catch (error) {
-        logger.error(`Error executing tool ${name}:`, error);
+
+        const duration = Date.now() - start;
+        logger.info('mcp:tool:response', { tool: name, durationMs: duration, resultContentBlocks: Array.isArray(result?.content) ? result.content.length : undefined });
+        return result;
+      } catch (error: any) {
+        const duration = Date.now() - start;
+        logger.error(`Error executing tool ${name}:`, {
+          message: error?.message || String(error),
+          stack: error?.stack,
+          durationMs: duration,
+          argsSummary,
+        });
         throw error;
       }
     });
@@ -520,9 +674,10 @@ export class FirecrawlMCPServer {
 
   private async handleSearchWeb(args: any) {
     const { query, options = {} } = args;
-    
-    logger.info(`Searching web with SearXNG: ${query}`);
-    
+    const start = Date.now();
+
+    logger.info('mcp:handler:search_web:start', { query, options });
+
     try {
       const result = await this.searxng.search(query, {
         engines: options.engines,
@@ -531,7 +686,10 @@ export class FirecrawlMCPServer {
         pageno: options.limit || 1,
         format: 'json'
       });
-      
+
+      const duration = Date.now() - start;
+      logger.info('mcp:handler:search_web:finish', { query, resultCount: result?.results?.length ?? 0, durationMs: duration });
+
       return {
         content: [
           {
@@ -553,17 +711,19 @@ export class FirecrawlMCPServer {
           },
         ],
       };
-    } catch (error) {
-      logger.error('SearXNG search failed:', error);
+    } catch (error: any) {
+      const duration = Date.now() - start;
+      logger.error('SearXNG search failed:', { message: error?.message, stack: error?.stack, durationMs: duration });
       throw new Error(`Search failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
   }
 
   private async handleSearchAndScrape(args: any) {
     const { query, options = {} } = args;
-    
-    logger.info(`Search and scrape workflow: ${query}`);
-    
+    const start = Date.now();
+
+    logger.info('mcp:handler:search_and_scrape:start', { query, options });
+
     try {
       // First, search with SearXNG
       const searchResults = await this.searxng.search(query, {
@@ -573,6 +733,8 @@ export class FirecrawlMCPServer {
       });
       
       if (!searchResults.results || searchResults.results.length === 0) {
+        const durationEmpty = Date.now() - start;
+        logger.info('mcp:handler:search_and_scrape:empty', { query, durationMs: durationEmpty });
         return {
           content: [
             {
@@ -592,13 +754,16 @@ export class FirecrawlMCPServer {
       const maxResults = Math.min(options.max_results || 3, 5);
       const topUrls = searchResults.results.slice(0, maxResults).map(r => r.url);
       
-      logger.info(`Scraping top ${topUrls.length} results with Crawl4AI`);
+      logger.info('mcp:handler:search_and_scrape:scrape_start', { query, topUrlsCount: topUrls.length });
       
       // Scrape the results
       const scrapeResults = await this.crawl4ai.batchScrape(topUrls, {
         formats: options.scrape_formats || ['markdown'],
         concurrency: 2
       });
+
+      const duration = Date.now() - start;
+      logger.info('mcp:handler:search_and_scrape:finish', { query, scrapedCount: scrapeResults.results.filter((r: any) => r.success).length, durationMs: duration });
       
       return {
         content: [
@@ -621,17 +786,19 @@ export class FirecrawlMCPServer {
           },
         ],
       };
-    } catch (error) {
-      logger.error('Search and scrape workflow failed:', error);
+    } catch (error: any) {
+      const duration = Date.now() - start;
+      logger.error('Search and scrape workflow failed:', { message: error?.message, stack: error?.stack, durationMs: duration });
       throw new Error(`Search and scrape failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
   }
 
   private async handleCrawl4AIScrape(args: any) {
     const { url, options = {} } = args;
-    
-    logger.info(`Scraping with Crawl4AI: ${url}`);
-    
+    const start = Date.now();
+
+    logger.info('mcp:handler:crawl4ai_scrape:start', { url, options });
+
     try {
       const result = await this.crawl4ai.scrape(url, {
         formats: options.formats || ['markdown'],
@@ -639,7 +806,10 @@ export class FirecrawlMCPServer {
         timeout: options.timeout || 30000,
         proxy_url: process.env.PROXY_URL
       });
-      
+
+      const duration = Date.now() - start;
+      logger.info('mcp:handler:crawl4ai_scrape:finish', { url, durationMs: duration });
+
       return {
         content: [
           {
@@ -648,8 +818,9 @@ export class FirecrawlMCPServer {
           },
         ],
       };
-    } catch (error) {
-      logger.error('Crawl4AI scrape failed:', error);
+    } catch (error: any) {
+      const duration = Date.now() - start;
+      logger.error('Crawl4AI scrape failed:', { message: error?.message, stack: error?.stack, durationMs: duration });
       throw new Error(`Crawl4AI scrape failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
   }
@@ -662,4 +833,32 @@ export class FirecrawlMCPServer {
 }
 
 const server = new FirecrawlMCPServer();
-server.run().catch(console.error);
+
+// Process lifecycle hooks — emit extra diagnostic logs so Coolify restarts are traceable
+process.on('SIGTERM', () => {
+  logger.warn('process:SIGTERM received — shutting down gracefully');
+  process.exit(0);
+});
+process.on('SIGINT', () => {
+  logger.warn('process:SIGINT received — shutting down gracefully');
+  process.exit(0);
+});
+process.on('uncaughtException', (err: Error) => {
+  logger.error('process:uncaughtException', { message: err.message, stack: err.stack });
+  // exit to surface restart cause in container logs
+  process.exit(1);
+});
+process.on('unhandledRejection', (reason) => {
+  logger.error('process:unhandledRejection', { reason: String(reason) });
+});
+
+// Periodic memory/health diagnostics to help track OOMs / restarts
+setInterval(() => {
+  const m = process.memoryUsage();
+  logger.info('process:mem', { rss: m.rss, heapUsed: m.heapUsed, heapTotal: m.heapTotal, external: m.external });
+}, 60_000);
+
+server.run().catch((err) => {
+  logger.error('MCP server failed to start', { message: err?.message || String(err), stack: err?.stack });
+  process.exit(1);
+});

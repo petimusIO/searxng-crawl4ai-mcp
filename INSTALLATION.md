@@ -22,7 +22,7 @@ curl http://localhost:8001/health                      # Crawl4AI
 
 ### 3. Configure Claude Code MCP
 
-Add this to your Claude Code MCP configuration:
+Add this to your Claude Code MCP configuration (stdio/spawn):
 
 ```json
 {
@@ -40,6 +40,32 @@ Add this to your Claude Code MCP configuration:
 ```
 
 **Important**: Replace `/absolute/path/to/firecrawl-mcp-custom` with your actual path!
+
+---
+
+### Run MCP as a network service (recommended for production / Coolify)
+
+If you want other services (including `seek-api`) and agentic systems to connect to the MCP over the network, start the MCP container and use the HTTP/SSE endpoints exposed by the server.
+
+- Enable networking (defaults provided in docker-compose):
+  - `MCP_HTTP_PORT` (default: 3003) — HTTP server for health, SSE, and tool proxy
+  - `MCP_INTERNAL_TOKEN` — **(strongly recommended)** bearer token to protect endpoints
+
+- Example Coolify / container env for `mcp-server`:
+  - MCP_HTTP_PORT=3003
+  - MCP_INTERNAL_TOKEN=<strong-secret>
+  - SEARXNG_URL=http://searxng:8080
+  - CRAWL4AI_URL=http://crawl4ai:8000
+
+- Endpoints provided by the MCP HTTP server:
+  - `GET /health` — basic health for SearXNG + Crawl4AI
+  - `GET /mcp/sse` — establish MCP SSE transport (client-side will POST messages back)
+  - `POST /mcp/sse` (or `/mcp/sse/:sessionId`) — receive client messages for SSE session
+  - `POST /mcp/tool/<toolName>` — HTTP proxy for common tools (`search_web`, `crawl4ai_scrape`, `search_and_scrape`)
+
+Security: put MCP on an internal-only network, set `MCP_INTERNAL_TOKEN`, and keep the port unexposed publicly.
+
+
 
 ### 4. Optional: Without Proxy
 If you don't want to use the rotating proxy, simply remove the env section:
