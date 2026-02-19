@@ -84,6 +84,7 @@ services:
         condition: service_started
     networks:
       - search-net
+      - coolify   # connect to external Coolify network so MCP can be reached by other services
     volumes:
       - ./logs:/app/logs
     restart: unless-stopped
@@ -94,3 +95,5 @@ volumes:
 networks:
   search-net:
     driver: bridge
+  coolify:
+    external: true
