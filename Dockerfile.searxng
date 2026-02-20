@@ -1,0 +1,11 @@
+FROM searxng/searxng:latest
+
+# Include the repository settings.yml into the image so the container
+# does not require a host bind-mount at /etc/searxng/settings.yml.
+COPY searxng-settings.yml /etc/searxng/settings.yml
+RUN chown root:root /etc/searxng/settings.yml \
+    && chmod 644 /etc/searxng/settings.yml
+
+# Keep the original image's entrypoint/behavior
+ENTRYPOINT ["/usr/local/searxng/start-searxng.sh"]
+CMD ["run"]

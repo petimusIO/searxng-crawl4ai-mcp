@@ -18,6 +18,9 @@ npm run build
 # Compose-level preflight service
 The Compose file includes a `searxng-preflight` service that verifies `searxng-settings.yml` is a regular, non-empty file before starting the SearXNG container. This prevents the common error where a host directory is accidentally mounted to `/etc/searxng/settings.yml`.
 
+# Note about configuration (new)
+This project now *builds a custom SearXNG image* that embeds `searxng-settings.yml` at image build time (see `Dockerfile.searxng`). You do **not** need to mount the settings file from the host; the file in the repository is used when building the image. If you prefer to override the config in Coolify, add a **file** mapping (not a directory) for `/etc/searxng/settings.yml` in the Persistent Storage section.
+
 # Start all services (SearXNG, Crawl4AI, Redis)
 docker compose up -d
 

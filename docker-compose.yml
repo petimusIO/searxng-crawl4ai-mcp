@@ -18,20 +18,21 @@ services:
       timeout: 2s
       retries: 1
 
-  # SearXNG - Open source metasearch engine
+  # SearXNG - Open source metasearch engine (built with embedded config)
   searxng:
-    image: searxng/searxng:latest
+    build:
+      context: .
+      dockerfile: Dockerfile.searxng
     container_name: searxng
     ports:
       - "8081:8080"
     environment:
       - SEARXNG_BASE_URL=http://localhost:8081/
       - SEARXNG_SECRET=${SEARXNG_SECRET:-$(openssl rand -hex 32)}
-    # IMPORTANT: bind a **file** here. If `./searxng-settings.yml` on the
-    # host is a directory the container will fail to start (SearXNG
-    # expects a file at /etc/searxng/settings.yml). See scripts/check-searx-config.sh
-    volumes:
-      - ./searxng-settings.yml:/etc/searxng/settings.yml:ro
+    # Configuration is baked into the image from ./searxng-settings.yml so
+    # you no longer need to mount a host file at /etc/searxng/settings.yml.
+    # If you do override via Coolify Persistent Storage, make sure you
+    # mount a *file* (not a directory) to avoid startup failures.
     cap_drop:
       - ALL
       - SETGID
