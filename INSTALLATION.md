@@ -15,6 +15,9 @@ npm run build
 # Preflight check - ensure searxng settings file is correct
 ./scripts/check-searx-config.sh
 
+# Compose-level preflight service
+The Compose file includes a `searxng-preflight` service that verifies `searxng-settings.yml` is a regular, non-empty file before starting the SearXNG container. This prevents the common error where a host directory is accidentally mounted to `/etc/searxng/settings.yml`.
+
 # Start all services (SearXNG, Crawl4AI, Redis)
 docker compose up -d
 
