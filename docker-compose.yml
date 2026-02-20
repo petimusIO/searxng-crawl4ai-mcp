@@ -10,6 +10,9 @@ services:
     environment:
       - SEARXNG_BASE_URL=http://localhost:8081/
       - SEARXNG_SECRET=${SEARXNG_SECRET:-$(openssl rand -hex 32)}
+    # IMPORTANT: bind a **file** here. If `./searxng-settings.yml` on the
+    # host is a directory the container will fail to start (SearXNG
+    # expects a file at /etc/searxng/settings.yml). See scripts/check-searx-config.sh
     volumes:
       - ./searxng-settings.yml:/etc/searxng/settings.yml:ro
     cap_drop:
@@ -23,6 +26,12 @@ services:
       - search-net
       - coolify
     restart: unless-stopped
+    # Limit restart attempts in orchestrators that respect `deploy` so a
+    # misconfiguration doesn't trigger infinite rebuild/restart churn.
+    deploy:
+      restart_policy:
+        condition: on-failure
+        max_attempts: 3
     healthcheck:
       test: wget --no-verbose --tries=1 --spider http://localhost:8080/ || exit 1
       interval: 30s

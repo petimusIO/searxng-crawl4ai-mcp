@@ -12,6 +12,9 @@ npm run build
 
 ### 2. Start Docker Services
 ```bash
+# Preflight check - ensure searxng settings file is correct
+./scripts/check-searx-config.sh
+
 # Start all services (SearXNG, Crawl4AI, Redis)
 docker compose up -d
 
@@ -19,6 +22,8 @@ docker compose up -d
 curl http://localhost:8081/search?q=test&format=json  # SearXNG
 curl http://localhost:8001/health                      # Crawl4AI
 ```
+
+> Note: `./searxng-settings.yml` must be a regular **file** (not a directory). If a directory is bind-mounted to `/etc/searxng/settings.yml`, the SearXNG container will fail to start and may enter a restart loop.
 
 ### 3. Configure Claude Code MCP
 
