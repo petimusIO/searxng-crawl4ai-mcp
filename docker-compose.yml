@@ -1,22 +1,6 @@
 # SearXNG + Crawl4AI MCP - Truly Self-Hosted Search & Scrape Stack
 
 services:
-  # Lightweight preflight to ensure the mounted searxng config is a *file*
-  # (prevents a directory from being bind-mounted to /etc/searxng/settings.yml)
-  searxng-preflight:
-    image: alpine:3.18
-    container_name: searxng-preflight
-    entrypoint: ["/bin/sh", "-c", "if [ -f /etc/searxng/settings.yml ] && [ -s /etc/searxng/settings.yml ]; then echo 'searxng settings OK'; exit 0; else echo 'ERROR: /etc/searxng/settings.yml missing or is not a file'; ls -la /etc/searxng || true; exit 2; fi"]
-    volumes:
-      - ./searxng-settings.yml:/etc/searxng/settings.yml:ro
-    restart: 'no'
-    networks:
-      - search-net
-    healthcheck:
-      test: ["CMD", "test", "-f", "/etc/searxng/settings.yml", "-a", "-s", "/etc/searxng/settings.yml"]
-      interval: 5s
-      timeout: 2s
-      retries: 1
 
   # SearXNG - Open source metasearch engine (built with embedded config)
   searxng:
@@ -44,9 +28,6 @@ services:
       - search-net
       - coolify
     restart: unless-stopped
-    depends_on:
-      searxng-preflight:
-        condition: service_healthy
     # Limit restart attempts in orchestrators that respect `deploy` so a
     # misconfiguration doesn't trigger infinite rebuild/restart churn.
     deploy:
