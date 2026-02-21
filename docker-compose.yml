@@ -79,30 +79,30 @@ services:
       - ./logs:/app/logs
 
   # Our MCP Server (orchestrates SearXNG + Crawl4AI)
-  mcp-server:
-    build: 
-      context: .
-      dockerfile: Dockerfile
-    ports:
-      - "3003:3003"
-    environment:
-      - SEARXNG_URL=http://searxng:8080
-      - CRAWL4AI_URL=http://crawl4ai:8000
-      - PROXY_URL=${PROXY_URL}
-      - LOG_LEVEL=info
-      - MCP_HTTP_PORT=3003
-      - MCP_INTERNAL_TOKEN=${MCP_INTERNAL_TOKEN:-}
-    depends_on:
-      searxng:
-        condition: service_healthy
-      crawl4ai:
-        condition: service_started
-    networks:
-      - search-net
-      - coolify   # connect to external Coolify network so MCP can be reached by other services
-    volumes:
-      - ./logs:/app/logs
-    restart: unless-stopped
+  # mcp-server:
+  #   build: 
+  #     context: .
+  #     dockerfile: Dockerfile
+  #   ports:
+  #     - "3003:3003"
+  #   environment:
+  #     - SEARXNG_URL=http://searxng:8080
+  #     - CRAWL4AI_URL=http://crawl4ai:8000
+  #     - PROXY_URL=${PROXY_URL}
+  #     - LOG_LEVEL=info
+  #     - MCP_HTTP_PORT=3003
+  #     - MCP_INTERNAL_TOKEN=${MCP_INTERNAL_TOKEN:-}
+  #   depends_on:
+  #     searxng:
+  #       condition: service_healthy
+  #     crawl4ai:
+  #       condition: service_started
+  #   networks:
+  #     - search-net
+  #     - coolify   # connect to external Coolify network so MCP can be reached by other services
+  #   volumes:
+  #     - ./logs:/app/logs
+  #   restart: unless-stopped
 
   # Our MCP Server (orchestrates SearXNG + Crawl4AI)
   # mcp-server:
