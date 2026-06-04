@@ -56,6 +56,22 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
               items: { type: 'string' },
               description: 'Output formats (markdown, html, links)',
               default: ['markdown']
+            },
+            content_filter: {
+              type: 'string',
+              enum: ['pruning', 'bm25', 'chain', 'none'],
+              description: 'Content filter type. "pruning" uses dynamic threshold to keep important content; "bm25" uses BM25 scoring against filter_query; "none" disables filtering.',
+              default: 'none'
+            },
+            filter_query: {
+              type: 'string',
+              description: 'Query string for content filtering (used with pruning or bm25 filter). For pruning, ranks content by relevance to this query. For BM25, scores content by keyword match.'
+            },
+            http_mode: {
+              type: 'string',
+              enum: ['auto', 'http', 'browser'],
+              description: 'HTTP mode: auto = HTTP first, fallback to browser; http = only HTTP; browser = always browser',
+              default: 'auto'
             }
           },
           required: ['url']
@@ -75,6 +91,22 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
               type: 'number',
               description: 'Number of top results to scrape',
               default: 3
+            },
+            content_filter: {
+              type: 'string',
+              enum: ['pruning', 'bm25', 'chain', 'none'],
+              description: 'Content filter type for scraped pages. "chain" runs pruning then BM25 for smallest, most relevant output.',
+              default: 'chain'
+            },
+            filter_query: {
+              type: 'string',
+              description: 'Query string for content filtering. Defaults to the search query if not provided.'
+            },
+            http_mode: {
+              type: 'string',
+              enum: ['auto', 'http', 'browser'],
+              description: 'HTTP mode: auto = HTTP first, fallback to browser; http = only HTTP; browser = always browser',
+              default: 'auto'
             }
           },
           required: ['query']
@@ -116,11 +148,18 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       };
 
     } else if (name === 'crawl4ai_scrape') {
-      const response = await axios.post(`${crawl4aiUrl}/scrape`, {
+      const crawlBody = {
         url: args.url,
         formats: args.formats || ['markdown'],
-        timeout: 30000
-      }, {
+        timeout: 30000,
+        http_mode: args.http_mode || 'auto',
+      };
+      if (args.content_filter && args.content_filter !== 'none') {
+        crawlBody.content_filter = args.content_filter;
+        crawlBody.filter_query = args.filter_query || args.query || '';
+      }
+
+      const response = await axios.post(`${crawl4aiUrl}/scrape`, crawlBody, {
         timeout: 35000
       });
 
@@ -153,11 +192,19 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       // Scrape top results
       const scrapePromises = topUrls.map(async (url) => {
         try {
-          const response = await axios.post(`${crawl4aiUrl}/scrape`, {
+          const scrapeBody = {
             url,
             formats: ['markdown'],
-            timeout: 15000
-          }, { timeout: 20000 });
+            timeout: 15000,
+            http_mode: args.http_mode || 'auto',
+          };
+          const cf = args.content_filter || 'chain';
+          if (cf !== 'none') {
+            scrapeBody.content_filter = cf;
+            scrapeBody.filter_query = args.filter_query || args.query;
+          }
+
+          const response = await axios.post(`${crawl4aiUrl}/scrape`, scrapeBody, { timeout: 20000 });
           
           return {
             url,
