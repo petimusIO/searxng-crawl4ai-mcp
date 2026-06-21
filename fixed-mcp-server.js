@@ -17,7 +17,7 @@ const server = new Server(
 
 // Simple HTTP clients - no complex initialization
 const searxngUrl = 'http://localhost:8081';
-const crawl4aiUrl = 'http://localhost:8001';
+const scrapeUrl = process.env.SPIDER_URL || 'http://localhost:8002';
 
 server.setRequestHandler(ListToolsRequestSchema, async () => {
   return {
@@ -43,7 +43,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: 'crawl4ai_scrape',
-        description: 'Scrape webpage content using Crawl4AI',
+        description: 'Scrape webpage content using Spider',
         inputSchema: {
           type: 'object',
           properties: {
@@ -151,15 +151,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const crawlBody = {
         url: args.url,
         formats: args.formats || ['markdown'],
-        timeout: 30000,
-        http_mode: args.http_mode || 'auto',
       };
       if (args.content_filter && args.content_filter !== 'none') {
         crawlBody.content_filter = args.content_filter;
         crawlBody.filter_query = args.filter_query || args.query || '';
       }
 
-      const response = await axios.post(`${crawl4aiUrl}/scrape`, crawlBody, {
+      const response = await axios.post(`${scrapeUrl}/scrape`, crawlBody, {
         timeout: 35000
       });
 
@@ -195,8 +193,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           const scrapeBody = {
             url,
             formats: ['markdown'],
-            timeout: 15000,
-            http_mode: args.http_mode || 'auto',
           };
           const cf = args.content_filter || 'chain';
           if (cf !== 'none') {
@@ -204,7 +200,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             scrapeBody.filter_query = args.filter_query || args.query;
           }
 
-          const response = await axios.post(`${crawl4aiUrl}/scrape`, scrapeBody, { timeout: 20000 });
+          const response = await axios.post(`${scrapeUrl}/scrape`, scrapeBody, { timeout: 20000 });
           
           return {
             url,
@@ -263,7 +259,7 @@ async function main() {
   
   // Only log to stderr in non-MCP mode
   if (!process.env.MCP_MODE) {
-    console.error('SearXNG + Crawl4AI MCP Server started');
+    console.error('SearXNG + Spider MCP Server started');
   }
 }
 
