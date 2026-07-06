@@ -152,7 +152,6 @@ export class SearXNGMCPServer {
           switch (toolName) {
             case 'search_web':
               return res.json({ ok: true, result: await this.handleSearchWeb(args) });
-            case 'crawl4ai_scrape':
             case 'scrape_url':
               return res.json({ ok: true, result: await this.handleScrapeUrl(args) });
             case 'search_and_scrape':
@@ -302,7 +301,6 @@ export class SearXNGMCPServer {
             return await this.handleSearchWeb(args);
           case 'search_and_scrape':
             return await this.handleSearchAndScrape(args);
-          case 'crawl4ai_scrape':
           case 'scrape_url':
             return await this.handleScrapeUrl(args);
           default:
