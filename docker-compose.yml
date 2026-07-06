@@ -57,6 +57,44 @@ services:
       timeout: 3s
       retries: 3
 
+  # Headless browser pool for Spider (persistent Chrome instances)
+  headless-browser:
+    build:
+      context: .
+      dockerfile: Dockerfile.headless-browser
+    container_name: headless-browser
+    hostname: headless-browser
+    ports:
+      - "9222:9222"
+      - "6000:6000"
+    environment:
+      - REMOTE_ADDRESS=0.0.0.0
+      - HOSTNAME_OVERRIDE=headless-browser
+    networks:
+      - search-net
+    restart: unless-stopped
+    healthcheck:
+      test: curl -sf http://localhost:6000/json/version || exit 1
+      interval: 15s
+      timeout: 5s
+      retries: 3
+    cap_add:
+      - SYS_ADMIN
+
+  # Spider-scrape service (HTTP-only, Rust web scraper)
+  spider-scrape:
+    build:
+      context: /home/triiq/projects/spider-scrape
+      dockerfile: Dockerfile
+    container_name: spider-scrape
+    ports:
+      - "8002:8002"
+    environment:
+      - RUST_LOG=info
+    networks:
+      - search-net
+    restart: unless-stopped
+
   # Crawl4AI service for web scraping
   crawl4ai:
     build:
@@ -78,57 +116,31 @@ services:
     volumes:
       - ./logs:/app/logs
 
-  # Our MCP Server (orchestrates SearXNG + Crawl4AI)
-  # mcp-server:
-  #   build: 
-  #     context: .
-  #     dockerfile: Dockerfile
-  #   ports:
-  #     - "3003:3003"
-  #   environment:
-  #     - SEARXNG_URL=http://searxng:8080
-  #     - CRAWL4AI_URL=http://crawl4ai:8000
-  #     - PROXY_URL=${PROXY_URL}
-  #     - LOG_LEVEL=info
-  #     - MCP_HTTP_PORT=3003
-  #     - MCP_INTERNAL_TOKEN=${MCP_INTERNAL_TOKEN:-}
-  #   depends_on:
-  #     searxng:
-  #       condition: service_healthy
-  #     crawl4ai:
-  #       condition: service_started
-  #   networks:
-  #     - search-net
-  #     - coolify   # connect to external Coolify network so MCP can be reached by other services
-  #   volumes:
-  #     - ./logs:/app/logs
-  #   restart: unless-stopped
 
-  # Our MCP Server (orchestrates SearXNG + Crawl4AI)
-  # mcp-server:
-  #   build:
-  #     context: .
-  #     dockerfile: Dockerfile
-  #   ports:
-  #     - "3003:3003"
-  #   environment:
-  #     - SEARXNG_URL=http://searxng:8080
-  #     - CRAWL4AI_URL=http://crawl4ai:8000
-  #     - PROXY_URL=${PROXY_URL}
-  #     - LOG_LEVEL=info
-  #     - MCP_HTTP_PORT=3003
-  #     - MCP_INTERNAL_TOKEN=${MCP_INTERNAL_TOKEN:-}
-  #   depends_on:
-  #     searxng:
-  #       condition: service_healthy
-  #     crawl4ai:
-  #       condition: service_started
-  #   networks:
-  #     - search-net
-  #     - coolify
-  #   volumes:
-  #     - ./logs:/app/logs
-  #   restart: unless-stopped
+  # MCP Server — orchestrates SearXNG + Crawl4AI, exposes MCP tools
+  mcp-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: mcp-server
+    ports:
+      - "3003:3003"
+    environment:
+      - SEARXNG_URL=http://searxng:8080
+      - SPIDER_URL=http://spider-scrape:8002
+      - CRAWL4AI_URL=http://crawl4ai:8000
+      - MCP_HTTP_PORT=3003
+      - MCP_INTERNAL_TOKEN=${MCP_INTERNAL_TOKEN:-}
+      - LOG_LEVEL=info
+    depends_on:
+      searxng:
+        condition: service_healthy
+      crawl4ai:
+        condition: service_started
+    networks:
+      - search-net
+      - coolify
+    restart: unless-stopped
 
 volumes:
   redis_data:

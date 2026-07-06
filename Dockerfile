@@ -1,35 +1,28 @@
-FROM node:18-alpine
-
+# Stage 1: Build
+FROM node:20-alpine AS build
 WORKDIR /app
 
-# Install dependencies for Playwright
-RUN apk add --no-cache \
-    chromium \
-    nss \
-    freetype \
-    freetype-dev \
-    harfbuzz \
-    ca-certificates \
-    ttf-freefont
-
-# Set Playwright to use system chromium
-ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
-ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium-browser
-
-# Copy package files
-COPY package*.json ./
-
-# Install dependencies
+COPY package.json ./
 RUN npm install
 
-# Copy source code
-COPY . .
+COPY tsconfig.json ./
+COPY src/ ./src/
+RUN npx tsc
 
-# Build the application
-RUN npm run build
+# Stage 2: Runtime
+FROM node:20-alpine
+WORKDIR /app
 
-# Expose port for MCP server
+RUN addgroup -g 1001 mcp && adduser -u 1001 -G mcp -s /bin/sh -D mcp
+USER mcp
+
+COPY --from=build /app/dist ./dist
+COPY --from=build /app/node_modules ./node_modules
+COPY --from=build /app/package.json ./
+
+ENV NODE_ENV=production
+ENV MCP_HTTP_PORT=3003
+
 EXPOSE 3003
 
-# Start the MCP server
-CMD ["npm", "start"]
+CMD ["node", "dist/index.js"]
