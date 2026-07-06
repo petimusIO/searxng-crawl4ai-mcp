@@ -8,16 +8,49 @@ import {
 import { config } from 'dotenv';
 import { logger } from './logger.js';
 import { SearXNGClient } from './searxng-client.js';
-import { Crawl4AIClient } from './crawl4ai-client.js';
+import { Crawl4AIClient, Crawl4AIResponse } from './crawl4ai-client.js';
 import express from 'express';
 import http from 'http';
 
 config();
 
+// ── Module-level constants ────────────────────────────────────────────
+const DEFAULT_LIMIT       = Number(process.env.WEB_SEARCH_LIMIT)          || 25;
+const FIT_MIN_WORDS       = Number(process.env.FIT_MIN_WORDS)             || 250;
+const CACHE_TTL_MS        = (Number(process.env.WEB_SEARCH_CACHE_TTL)     || 300) * 1000;
+const MAX_RETRIES         = Number(process.env.WEB_SEARCH_MAX_RETRIES)    || 1;
+const CRAWL_PER_URL_TIMEOUT_MS  = Number(process.env.WEB_SEARCH_CRAWL_TIMEOUT_MS)  || 1000;
+const CRAWL_BATCH_TIMEOUT_MS    = Number(process.env.WEB_SEARCH_CRAWL_BATCH_TIMEOUT_MS) || 1500;
+const CRAWL_POOL_SIZE           = Number(process.env.WEB_SEARCH_CRAWL_POOL_SIZE)      || 15;
+const DEEP_PER_URL_TIMEOUT_MS   = 20_000;
+const DEEP_BATCH_TIMEOUT_MS     = 60_000;
+const DEEP_POOL_SIZE            = 8;
+
+// ── Caching ───────────────────────────────────────────────────────────
+const searchCache  = new Map<string, { data: any; expires: number }>();
+const scrapeCache  = new Map<string, { data: any; expires: number }>();
+
+function getCache(map: Map<string, { data: any; expires: number }>, key: string): any | null {
+  if (process.env.CACHE_ENABLED === 'false') return null;
+  const entry = map.get(key);
+  if (!entry) return null;
+  if (Date.now() > entry.expires) {
+    map.delete(key);
+    return null;
+  }
+  return entry.data;
+}
+
+function setCache(map: Map<string, { data: any; expires: number }>, key: string, data: any, ttl?: number) {
+  if (process.env.CACHE_ENABLED === 'false') return;
+  map.set(key, { data, expires: Date.now() + (ttl ?? CACHE_TTL_MS) });
+}
+
+// ── Server class ──────────────────────────────────────────────────────
 export class SearXNGMCPServer {
   private server: Server;
   private searxng: SearXNGClient;
-  private crawl4ai: Crawl4AIClient;
+  private _crawl4ai?: Crawl4AIClient;
   // network server state (optional)
   private expressApp?: express.Application;
   private httpServer?: http.Server;
@@ -38,9 +71,8 @@ export class SearXNGMCPServer {
 
     // Initialize SearXNG client
     this.searxng = new SearXNGClient(process.env.SEARXNG_URL || 'http://localhost:8081');
-    
-    // Initialize Crawl4AI client
-    this.crawl4ai = new Crawl4AIClient(process.env.CRAWL4AI_URL || 'http://localhost:8001');
+
+    // Crawl4AI client is lazily initialized via getCrawl4AIClient()
 
     this.setupToolHandlers();
 
@@ -69,7 +101,7 @@ export class SearXNGMCPServer {
 
       app.get('/health', async (_req, res) => {
         const searx = await this.searxng.healthCheck().catch(() => false);
-        const crawl = await this.crawl4ai.healthCheck().catch(() => false);
+        const crawl = await this.getCrawl4AIClient().healthCheck().catch(() => false);
         return res.status(200).json({ ok: true, searxng: searx, crawl4ai: crawl });
       });
 
@@ -122,7 +154,7 @@ export class SearXNGMCPServer {
               return res.json({ ok: true, result: await this.handleSearchWeb(args) });
             case 'crawl4ai_scrape':
             case 'scrape_url':
-              return res.json({ ok: true, result: await this.handleCrawl4AIScrape(args) });
+              return res.json({ ok: true, result: await this.handleScrapeUrl(args) });
             case 'search_and_scrape':
               return res.json({ ok: true, result: await this.handleSearchAndScrape(args) });
             default:
@@ -141,6 +173,16 @@ export class SearXNGMCPServer {
     }
   }
 
+  /** Lazily initialise the Crawl4AI client so env-var fallback order works. */
+  private getCrawl4AIClient(): Crawl4AIClient {
+    if (!this._crawl4ai) {
+      const crawlBase = (process.env.SPIDER_URL || process.env.CRAWL4AI_URL || 'http://localhost:8001').replace(/\/$/, '');
+      this._crawl4ai = new Crawl4AIClient(crawlBase);
+    }
+    return this._crawl4ai;
+  }
+
+  // ── Tool registration ───────────────────────────────────────────────
   private setupToolHandlers() {
     this.server.setRequestHandler(ListToolsRequestSchema, async () => {
       return {
@@ -155,29 +197,24 @@ export class SearXNGMCPServer {
                   type: 'string',
                   description: 'The search query',
                 },
-                options: {
-                  type: 'object',
-                  properties: {
-                    engines: {
-                      type: 'string',
-                      description: 'Comma-separated list of engines (e.g., "google,bing")'
-                    },
-                    categories: {
-                      type: 'string',
-                      description: 'Search categories (general, images, news, etc.)'
-                    },
-                    language: {
-                      type: 'string',
-                      description: 'Search language (en, es, fr, etc.)',
-                      default: 'en'
-                    },
-                    limit: {
-                      type: 'number',
-                      description: 'Number of results page (pageno)',
-                      default: 1
-                    }
-                  }
-                }
+                maxResults: {
+                  type: 'number',
+                  description: 'Maximum number of results to return',
+                  default: 25,
+                },
+                categories: {
+                  type: 'string',
+                  description: 'Search categories (general, images, news, etc.)',
+                },
+                engines: {
+                  type: 'string',
+                  description: 'Comma-separated list of engines (e.g., "google,bing")',
+                },
+                language: {
+                  type: 'string',
+                  description: 'Search language (en, es, fr, etc.)',
+                  default: 'en',
+                },
               },
               required: ['query'],
             },
@@ -192,32 +229,38 @@ export class SearXNGMCPServer {
                   type: 'string',
                   description: 'The search query',
                 },
-                options: {
-                  type: 'object',
-                  properties: {
-                    max_results: {
-                      type: 'number',
-                      description: 'Maximum number of search results to scrape',
-                      default: 3
-                    },
-                    engines: {
-                      type: 'string',
-                      description: 'Search engines to use'
-                    },
-                    scrape_formats: {
-                      type: 'array',
-                      items: { type: 'string' },
-                      description: 'Formats for scraped content',
-                      default: ['markdown']
-                    }
-                  }
-                }
+                maxResults: {
+                  type: 'number',
+                  description: 'Maximum number of search results to scrape',
+                  default: 3,
+                },
+                mode: {
+                  type: 'string',
+                  enum: ['quick', 'deep'],
+                  description: 'Scraping mode: quick (fast, first pass) or deep (thorough, all results)',
+                  default: 'quick',
+                },
+                scrapeAll: {
+                  type: 'boolean',
+                  description: 'Scrape all results regardless of snippet length',
+                  default: false,
+                },
+                categories: {
+                  type: 'string',
+                  description: 'Search categories to filter by',
+                },
+                formats: {
+                  type: 'array',
+                  items: { type: 'string' },
+                  description: 'Formats for scraped content',
+                  default: ['markdown'],
+                },
               },
               required: ['query'],
             },
           },
           {
-            name: 'crawl4ai_scrape',
+            name: 'scrape_url',
             description: 'Scrape a URL using Crawl4AI (better than Firecrawl for self-hosted)',
             inputSchema: {
               type: 'object',
@@ -226,31 +269,26 @@ export class SearXNGMCPServer {
                   type: 'string',
                   description: 'The URL to scrape',
                 },
-                options: {
-                  type: 'object',
-                  properties: {
-                    formats: {
-                      type: 'array',
-                      items: { type: 'string' },
-                      description: 'Output formats',
-                      default: ['markdown']
-                    },
-                    wait_for: {
-                      type: 'number',
-                      description: 'Wait time in milliseconds',
-                      default: 0
-                    },
-                    timeout: {
-                      type: 'number',
-                      description: 'Timeout in milliseconds',
-                      default: 30000
-                    }
-                  }
-                }
+                formats: {
+                  type: 'array',
+                  items: { type: 'string' },
+                  description: 'Output formats',
+                  default: ['markdown'],
+                },
+                wait_for: {
+                  type: 'number',
+                  description: 'Wait time in milliseconds',
+                  default: 0,
+                },
+                timeout: {
+                  type: 'number',
+                  description: 'Timeout in milliseconds',
+                  default: 30000,
+                },
               },
               required: ['url'],
             },
-          }
+          },
         ] as Tool[],
       };
     });
@@ -265,7 +303,8 @@ export class SearXNGMCPServer {
           case 'search_and_scrape':
             return await this.handleSearchAndScrape(args);
           case 'crawl4ai_scrape':
-            return await this.handleCrawl4AIScrape(args);
+          case 'scrape_url':
+            return await this.handleScrapeUrl(args);
           default:
             throw new Error(`Unknown tool: ${name}`);
         }
@@ -276,129 +315,104 @@ export class SearXNGMCPServer {
     });
   }
 
+  // ── Tool handlers ───────────────────────────────────────────────────
+
+  /**
+   * Web search via SearXNG with caching and optional retry.
+   */
   private async handleSearchWeb(args: any) {
-    const { query, options = {} } = args;
-    
+    const { query, maxResults, categories, engines, language } = args;
+
     logger.info(`Searching web with SearXNG: ${query}`);
-    
-    try {
-      const result = await this.searxng.search(query, {
-        engines: options.engines,
-        categories: options.categories,
-        language: options.language || 'en',
-        pageno: options.limit || 1,
-        format: 'json'
-      });
-      
-      return {
-        content: [
-          {
-            type: 'text',
-            text: JSON.stringify({
-              query: result.query,
-              total_results: result.number_of_results,
-              results: result.results.map(r => ({
-                title: r.title,
-                url: r.url,
-                content: r.content,
-                publishedDate: r.publishedDate
-              })),
-              suggestions: result.suggestions,
-              engine_info: {
-                unresponsive: result.unresponsive_engines
-              }
-            }, null, 2),
-          },
-        ],
-      };
-    } catch (error) {
-      logger.error('SearXNG search failed:', error);
-      throw new Error(`Search failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
-    }
-  }
 
-  private async handleSearchAndScrape(args: any) {
-    const { query, options = {} } = args;
-    
-    logger.info(`Search and scrape workflow: ${query}`);
-    
-    try {
-      // First, search with SearXNG
-      const searchResults = await this.searxng.search(query, {
-        engines: options.engines,
-        language: 'en',
-        format: 'json'
-      });
-      
-      if (!searchResults.results || searchResults.results.length === 0) {
-        return {
-          content: [
-            {
-              type: 'text',
-              text: JSON.stringify({
-                query,
-                search_results: 0,
-                scraped_results: [],
-                message: 'No search results found'
-              }, null, 2),
-            },
-          ],
-        };
+    // Check cache
+    const cacheKey = `search:${query}:${categories || ''}:${engines || ''}:${language || 'en'}`;
+    const cached = getCache(searchCache, cacheKey);
+    if (cached) return cached;
+
+    const limit = Math.min(maxResults || DEFAULT_LIMIT, 50);
+    let lastError: any;
+
+    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+      try {
+        const result = await this.searxng.search(query, {
+          engines,
+          categories,
+          language: language || 'en',
+          pageno: 1,
+          format: 'json',
+        });
+
+        if (result.results && result.results.length > 0) {
+          const response = {
+            content: [
+              {
+                type: 'text',
+                text: JSON.stringify(
+                  {
+                    query: result.query,
+                    total_results: result.number_of_results,
+                    results: result.results.slice(0, limit).map((r) => ({
+                      title: r.title,
+                      url: r.url,
+                      content: r.content,
+                      publishedDate: r.publishedDate,
+                    })),
+                    suggestions: result.suggestions,
+                    engine_info: {
+                      unresponsive: result.unresponsive_engines,
+                    },
+                  },
+                  null,
+                  2
+                ),
+              },
+            ],
+          };
+
+          setCache(searchCache, cacheKey, response);
+          return response;
+        }
+
+        // No results – retry
+        lastError = new Error('No results found');
+        if (attempt < MAX_RETRIES) {
+          await new Promise((r) => setTimeout(r, 500));
+        }
+      } catch (error) {
+        lastError = error;
+        if (attempt < MAX_RETRIES) {
+          await new Promise((r) => setTimeout(r, 500));
+        }
       }
-      
-      // Get top URLs to scrape
-      const maxResults = Math.min(options.max_results || 3, 5);
-      const topUrls = searchResults.results.slice(0, maxResults).map(r => r.url);
-      
-      logger.info(`Scraping top ${topUrls.length} results with Crawl4AI`);
-      
-      // Scrape the results
-      const scrapeResults = await this.crawl4ai.batchScrape(topUrls, {
-        formats: options.scrape_formats || ['markdown'],
-        concurrency: 2
-      });
-      
-      return {
-        content: [
-          {
-            type: 'text',
-            text: JSON.stringify({
-              query,
-              search_results: searchResults.number_of_results,
-              scraped_count: scrapeResults.results.filter(r => r.success).length,
-              results: scrapeResults.results.map((scrapeResult, index) => ({
-                search_info: {
-                  title: searchResults.results[index]?.title,
-                  url: scrapeResult.url,
-                  snippet: searchResults.results[index]?.content
-                },
-                scraped_content: scrapeResult.success ? scrapeResult.data : { error: scrapeResult.error },
-                success: scrapeResult.success
-              }))
-            }, null, 2),
-          },
-        ],
-      };
-    } catch (error) {
-      logger.error('Search and scrape workflow failed:', error);
-      throw new Error(`Search and scrape failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
+
+    logger.error('SearXNG search failed:', lastError);
+    throw new Error(`Search failed: ${lastError instanceof Error ? lastError.message : 'Unknown error'}`);
   }
 
-  private async handleCrawl4AIScrape(args: any) {
-    const { url, options = {} } = args;
-    
+  /**
+   * Scrape a single URL via Crawl4AI with caching.
+   */
+  private async handleScrapeUrl(args: any) {
+    const { url, formats, wait_for, timeout } = args;
+
     logger.info(`Scraping with Crawl4AI: ${url}`);
-    
+
+    // Check cache
+    const cacheKey = `scrape:${url}:${(formats || ['markdown']).join(',')}`;
+    const cached = getCache(scrapeCache, cacheKey);
+    if (cached) return cached;
+
     try {
-      const result = await this.crawl4ai.scrape(url, {
-        formats: options.formats || ['markdown'],
-        wait_for: options.wait_for || 0,
-        timeout: options.timeout || 30000,
-        proxy_url: process.env.PROXY_URL
+      const result = await this.getCrawl4AIClient().scrape(url, {
+        formats: formats || ['markdown'],
+        wait_for: wait_for || 0,
+        timeout: timeout || 30000,
+        proxy_url: process.env.PROXY_URL,
       });
-      
-      return {
+
+      const response = {
         content: [
           {
             type: 'text',
@@ -406,11 +420,203 @@ export class SearXNGMCPServer {
           },
         ],
       };
+
+      setCache(scrapeCache, cacheKey, response);
+      return response;
     } catch (error) {
       logger.error('Crawl4AI scrape failed:', error);
       throw new Error(`Crawl4AI scrape failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
   }
+
+  /**
+   * Search + scrape workflow: searches SearXNG then scrapes promising URLs
+   * with a concurrency-limited worker pool.
+   */
+  private async handleSearchAndScrape(args: any) {
+    const { query, maxResults, mode, scrapeAll, categories, formats } = args;
+    const isDeep = mode === 'deep';
+    const perUrlTimeout = isDeep ? DEEP_PER_URL_TIMEOUT_MS : CRAWL_PER_URL_TIMEOUT_MS;
+    const batchTimeout = isDeep ? DEEP_BATCH_TIMEOUT_MS : CRAWL_BATCH_TIMEOUT_MS;
+    const poolSize = isDeep ? DEEP_POOL_SIZE : CRAWL_POOL_SIZE;
+
+    logger.info(`Search and scrape workflow: ${query}${isDeep ? ' (deep mode)' : ''}`);
+
+    const startTime = Date.now();
+
+    try {
+      // 1. Check cache for search results
+      const cacheKey = `search_and_scrape:${query}:${maxResults || ''}:${mode || ''}:${scrapeAll || ''}:${categories || ''}`;
+      const cached = getCache(searchCache, cacheKey);
+      if (cached) return cached;
+
+      // 2. Search with optional retry
+      let searchResults: Awaited<ReturnType<SearXNGClient['search']>> | null = null;
+      for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+        try {
+          searchResults = await this.searxng.search(query, {
+            categories,
+            language: 'en',
+            format: 'json',
+          });
+          if (searchResults.results && searchResults.results.length > 0) break;
+        } catch (e) {
+          if (attempt < MAX_RETRIES) {
+            await new Promise((r) => setTimeout(r, 500));
+          } else {
+            throw e;
+          }
+        }
+      }
+
+      if (!searchResults || !searchResults.results || searchResults.results.length === 0) {
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify(
+                {
+                  query,
+                  search_results: 0,
+                  scraped_results: [],
+                  elapsed_ms: Date.now() - startTime,
+                  message: 'No search results found',
+                },
+                null,
+                2
+              ),
+            },
+          ],
+        };
+      }
+
+      // 3. Determine which URLs to scrape
+      const limit = Math.min(maxResults || 3, isDeep ? 50 : 10);
+      const topResults = searchResults.results.slice(0, limit);
+
+      type UrlEntry = { url: string; title: string; snippet: string };
+      let urlsToScrape: UrlEntry[] = topResults.map((r) => ({
+        url: r.url,
+        title: r.title,
+        snippet: r.content,
+      }));
+
+      // 4. Only scrape URLs whose snippet is too short (unless forced)
+      if (!scrapeAll && !isDeep) {
+        urlsToScrape = urlsToScrape.filter((entry) => !entry.snippet || entry.snippet.length < 200);
+      }
+
+      logger.info(`Scraping ${urlsToScrape.length} of ${topResults.length} URLs with Crawl4AI (pool: ${poolSize})`);
+
+      // 5. Worker pool – scrape each URL individually for per-result error handling
+      const scrapedResults: Array<{
+        url: string;
+        success: boolean;
+        data?: any;
+        error?: string;
+        title: string;
+        snippet: string;
+      }> = [];
+
+      for (let i = 0; i < urlsToScrape.length; i += poolSize) {
+        const batch = urlsToScrape.slice(i, i + poolSize);
+        const batchResults = await Promise.allSettled(
+          batch.map((entry) => this.scrapeSingleUrl(entry.url, perUrlTimeout, isDeep, formats))
+        );
+
+        for (let j = 0; j < batchResults.length; j++) {
+          const settled = batchResults[j];
+          const entry = batch[j];
+
+          if (settled.status === 'fulfilled') {
+            // 8. Content-fit check: skip results with too few words
+            const wordCount = settled.value.data?.metadata?.word_count || 0;
+            if (!isDeep && !scrapeAll && wordCount < FIT_MIN_WORDS) {
+              continue;
+            }
+            scrapedResults.push({
+              url: entry.url,
+              success: settled.value.success,
+              data: settled.value.data,
+              title: entry.title,
+              snippet: entry.snippet,
+            });
+          } else {
+            scrapedResults.push({
+              url: entry.url,
+              success: false,
+              error: settled.reason?.message || 'Scrape failed',
+              title: entry.title,
+              snippet: entry.snippet,
+            });
+          }
+        }
+      }
+
+      const response = {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify(
+              {
+                query,
+                mode: isDeep ? 'deep' : 'quick',
+                search_results: searchResults.number_of_results,
+                scraped_count: scrapedResults.filter((r) => r.success).length,
+                elapsed_ms: Date.now() - startTime,
+                results: scrapedResults.map((r) => ({
+                  search_info: {
+                    title: r.title,
+                    url: r.url,
+                    snippet: r.snippet,
+                  },
+                  scraped_content: r.success ? r.data : { error: r.error },
+                  success: r.success,
+                })),
+              },
+              null,
+              2
+            ),
+          },
+        ],
+      };
+
+      setCache(searchCache, cacheKey, response);
+      return response;
+    } catch (error) {
+      logger.error('Search and scrape workflow failed:', error);
+      throw new Error(`Search and scrape failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
+  /**
+   * Scrape a single URL and return the raw Crawl4AI response.
+   * Results are cached per URL to avoid repeat work across calls.
+   */
+  private async scrapeSingleUrl(
+    url: string,
+    timeout: number,
+    isDeep: boolean = false,
+    formats?: string[]
+  ): Promise<Crawl4AIResponse> {
+    const outputFormats = formats || ['markdown'];
+
+    const cacheKey = `scrape_single:${url}:${outputFormats.join(',')}`;
+    const cached = getCache(scrapeCache, cacheKey);
+    if (cached) return cached;
+
+    const result = await this.getCrawl4AIClient().scrape(url, {
+      formats: outputFormats,
+      timeout,
+      wait_for: 0,
+      proxy_url: process.env.PROXY_URL,
+    });
+
+    setCache(scrapeCache, cacheKey, result);
+    return result;
+  }
+
+  // ── Lifecycle ──────────────────────────────────────────────────────
 
   async run() {
     const transport = new StdioServerTransport();
