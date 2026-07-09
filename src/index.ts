@@ -26,6 +26,16 @@ const DEEP_PER_URL_TIMEOUT_MS   = 20_000;
 const DEEP_BATCH_TIMEOUT_MS     = 60_000;
 const DEEP_POOL_SIZE            = 8;
 
+// Cache TTL configuration (milliseconds)
+const URL_SCRAPE_CACHE_TTL_MS   = Number(process.env.MCP_URL_SCRAPE_CACHE_TTL_MS)   || 86_400_000; // 24h
+const SEARCH_CACHE_TTL_MS       = Number(process.env.MCP_SEARCH_CACHE_TTL_MS)        || 300_000;    // 5 min
+const COMPOSITE_CACHE_TTL_MS    = Number(process.env.MCP_COMPOSITE_CACHE_TTL_MS)     || 300_000;    // 5 min
+
+// Passage extraction configuration
+const RELEVANCE_TOP_N           = Number(process.env.MCP_RELEVANCE_TOP_N)            || 5;
+const RELEVANCE_CONTEXT_WINDOW  = Number(process.env.MCP_RELEVANCE_CONTEXT_WINDOW)   || 1;
+const RELEVANCE_MIN_SCORE       = Number(process.env.MCP_RELEVANCE_MIN_SCORE)        || 0.0;
+
 // ── Server class ──────────────────────────────────────────────────────
 export class SearXNGMCPServer {
   private server: Server;
