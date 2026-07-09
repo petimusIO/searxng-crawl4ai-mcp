@@ -273,6 +273,12 @@ export class SearXNGMCPServer {
                   description: 'Formats for scraped content',
                   default: ['markdown'],
                 },
+                content_mode: {
+                  type: 'string',
+                  enum: ['full', 'relevant_only', 'snippet'],
+                  description: 'Response mode: "full" returns everything, "relevant_only" strips full markdown, "snippet" returns only key passages with no context',
+                  default: 'full',
+                },
               },
               required: ['query'],
             },
@@ -302,6 +308,12 @@ export class SearXNGMCPServer {
                   type: 'number',
                   description: 'Timeout in milliseconds',
                   default: 30000,
+                },
+                content_mode: {
+                  type: 'string',
+                  enum: ['full', 'relevant_only', 'snippet'],
+                  description: 'Response mode: "full" returns everything, "relevant_only" strips full markdown, "snippet" returns only key passages with no context',
+                  default: 'full',
                 },
               },
               required: ['url'],
@@ -413,7 +425,7 @@ export class SearXNGMCPServer {
    * Delegates to cachedScrapeUrl for unified per-URL caching.
    */
   private async handleScrapeUrl(args: any) {
-    const { url, formats, timeout } = args;
+    const { url, formats, timeout, content_mode } = args;
 
     logger.info(`Scraping with CRW: ${url}`);
 
@@ -427,11 +439,19 @@ export class SearXNGMCPServer {
       // Extract passages (no query for direct scrape — returns first N paragraphs)
       let relevantPassages: any = undefined;
       if (result.data?.markdown) {
+        const ctxWindow = content_mode === 'snippet' ? 0 : RELEVANCE_CONTEXT_WINDOW;
         relevantPassages = extractRelevantPassages(result.data.markdown, '', {
           topN: RELEVANCE_TOP_N,
-          contextWindow: 0, // no context needed without a query
+          contextWindow: ctxWindow,
           minScore: 0,
         });
+      }
+
+      // Strip full markdown if not in 'full' mode
+      const responseData: any = { ...result };
+      if (content_mode && content_mode !== 'full' && responseData.data) {
+        const { markdown: _, ...rest } = responseData.data;
+        responseData.data = rest;
       }
 
       const response = {
@@ -440,7 +460,7 @@ export class SearXNGMCPServer {
             type: 'text',
             text: JSON.stringify(
               {
-                ...result,
+                ...responseData,
                 relevant_passages: relevantPassages,
               },
               null,
@@ -462,7 +482,8 @@ export class SearXNGMCPServer {
    * with a concurrency-limited worker pool.
    */
   private async handleSearchAndScrape(args: any) {
-    const { query, maxResults, mode, scrapeAll, categories, formats } = args;
+    const { query, maxResults, mode, scrapeAll, categories, formats, content_mode } = args;
+    const contentMode = content_mode || 'full';
     const isDeep = mode === 'deep';
     const perUrlTimeout = isDeep ? DEEP_PER_URL_TIMEOUT_MS : CRAWL_PER_URL_TIMEOUT_MS;
     const batchTimeout = isDeep ? DEEP_BATCH_TIMEOUT_MS : CRAWL_BATCH_TIMEOUT_MS;
@@ -475,7 +496,7 @@ export class SearXNGMCPServer {
     try {
       // 1. Check cache for search results
       const formatKey = (formats || ['markdown']).join(',');
-      const cacheKey = `search_and_scrape:${query}:${maxResults || ''}:${mode || ''}:${scrapeAll || ''}:${categories || ''}:${formatKey}`;
+      const cacheKey = `search_and_scrape:${query}:${maxResults || ''}:${mode || ''}:${scrapeAll || ''}:${categories || ''}:${formatKey}:${contentMode}`;
       const cached = await this.cache.get(cacheKey);
       if (cached) return cached;
 
@@ -611,20 +632,29 @@ export class SearXNGMCPServer {
                 search_results: searchResults.number_of_results,
                 scraped_count: scrapedResults.filter((r) => r.success).length,
                 elapsed_ms: Date.now() - startTime,
-                results: scrapedResults.map((r) => ({
-                  search_info: {
-                    title: r.title,
-                    url: r.url,
-                    snippet: r.snippet,
-                  },
-                  scraped_content: {
+                results: scrapedResults.map((r) => {
+                  // Strip full markdown from data if not in 'full' mode
+                  let resultData = r.data;
+                  if (contentMode !== 'full' && resultData) {
+                    const { markdown: _, ...rest } = resultData;
+                    resultData = rest;
+                  }
+
+                  return {
+                    search_info: {
+                      title: r.title,
+                      url: r.url,
+                      snippet: r.snippet,
+                    },
+                    scraped_content: {
+                      success: r.success,
+                      data: r.success ? resultData : undefined,
+                      error: !r.success ? r.error : undefined,
+                      relevant_passages: r.relevant_passages,
+                    },
                     success: r.success,
-                    data: r.success ? r.data : undefined,
-                    error: !r.success ? r.error : undefined,
-                    relevant_passages: r.relevant_passages,
-                  },
-                  success: r.success,
-                })),
+                  };
+                }),
               },
               null,
               2
