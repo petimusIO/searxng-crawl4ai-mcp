@@ -10,6 +10,7 @@ import { logger } from './logger.js';
 import { SearXNGClient } from './searxng-client.js';
 import { ScrapeClient, ScrapeClientResponse } from './scrape-client.js';
 import { RedisCache } from './redis-cache.js';
+import { normalizeUrl } from './url-normalizer.js';
 import express from 'express';
 import http from 'http';
 
@@ -170,6 +171,32 @@ export class SearXNGMCPServer {
       this._scrapeClient = new ScrapeClient(baseUrl);
     }
     return this._scrapeClient;
+  }
+
+  /**
+   * Scrape a URL via CRW with per-URL caching (24h TTL).
+   * Uses normalized URLs for cache keys to maximize reuse.
+   * Returns the raw ScrapeClientResponse — callers shape output as needed.
+   */
+  private async cachedScrapeUrl(
+    url: string,
+    formats: string[],
+    timeout: number = 30000
+  ): Promise<ScrapeClientResponse> {
+    const normalized = normalizeUrl(url);
+    const cacheKey = `scrape_url:${normalized}:${(formats || ['markdown']).join(',')}`;
+    const cached = await this.cache.get<ScrapeClientResponse>(cacheKey);
+    if (cached) return cached;
+
+    const result = await this.getScrapeClient().scrape(url, {
+      formats: formats || ['markdown'],
+      timeout,
+      wait_for: 0,
+      proxy_url: process.env.PROXY_URL,
+    });
+
+    await this.cache.set(cacheKey, result, URL_SCRAPE_CACHE_TTL_MS);
+    return result;
   }
 
   // ── Tool registration ───────────────────────────────────────────────
@@ -382,24 +409,19 @@ export class SearXNGMCPServer {
 
   /**
    * Scrape a single URL via CRW with caching.
+   * Delegates to cachedScrapeUrl for unified per-URL caching.
    */
   private async handleScrapeUrl(args: any) {
-    const { url, formats, wait_for, timeout } = args;
+    const { url, formats, timeout } = args;
 
     logger.info(`Scraping with CRW: ${url}`);
 
-    // Check cache
-    const cacheKey = `scrape:${url}:${(formats || ['markdown']).join(',')}`;
-    const cached = await this.cache.get(cacheKey);
-    if (cached) return cached;
-
     try {
-      const result = await this.getScrapeClient().scrape(url, {
-        formats: formats || ['markdown'],
-        wait_for: wait_for || 0,
-        timeout: timeout || 30000,
-        proxy_url: process.env.PROXY_URL,
-      });
+      const result = await this.cachedScrapeUrl(
+        url,
+        formats || ['markdown'],
+        timeout || 30000
+      );
 
       const response = {
         content: [
@@ -410,7 +432,6 @@ export class SearXNGMCPServer {
         ],
       };
 
-      await this.cache.set(cacheKey, response);
       return response;
     } catch (error) {
       logger.error('CRW scrape failed:', error);
@@ -435,7 +456,8 @@ export class SearXNGMCPServer {
 
     try {
       // 1. Check cache for search results
-      const cacheKey = `search_and_scrape:${query}:${maxResults || ''}:${mode || ''}:${scrapeAll || ''}:${categories || ''}`;
+      const formatKey = (formats || ['markdown']).join(',');
+      const cacheKey = `search_and_scrape:${query}:${maxResults || ''}:${mode || ''}:${scrapeAll || ''}:${categories || ''}:${formatKey}`;
       const cached = await this.cache.get(cacheKey);
       if (cached) return cached;
 
@@ -580,7 +602,7 @@ export class SearXNGMCPServer {
 
   /**
    * Scrape a single URL and return the raw ScrapeClient response.
-   * Results are cached per URL to avoid repeat work across calls.
+   * Delegates to cachedScrapeUrl for unified per-URL caching.
    */
   private async scrapeSingleUrl(
     url: string,
@@ -588,21 +610,11 @@ export class SearXNGMCPServer {
     isDeep: boolean = false,
     formats?: string[]
   ): Promise<ScrapeClientResponse> {
-    const outputFormats = formats || ['markdown'];
-
-    const cacheKey = `scrape_single:${url}:${outputFormats.join(',')}`;
-    const cached = await this.cache.get(cacheKey);
-    if (cached) return cached;
-
-    const result = await this.getScrapeClient().scrape(url, {
-      formats: outputFormats,
-      timeout,
-      wait_for: 0,
-      proxy_url: process.env.PROXY_URL,
-    });
-
-    await this.cache.set(cacheKey, result);
-    return result;
+    return this.cachedScrapeUrl(
+      url,
+      formats || ['markdown'],
+      timeout
+    );
   }
 
   // ── Lifecycle ──────────────────────────────────────────────────────
