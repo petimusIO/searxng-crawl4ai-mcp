@@ -1,7 +1,7 @@
 {
   "name": "searxng-crawl4ai-mcp",
-  "version": "2.0.0",
-  "description": "Self-hosted MCP server for SearXNG + Crawl4AI web search and scrape",
+  "version": "3.0.0",
+  "description": "Self-hosted MCP server for SearXNG + CRW web search and scrape",
   "main": "dist/index.js",
   "type": "module",
   "scripts": {
@@ -31,7 +31,7 @@
   "keywords": [
     "mcp",
     "searxng",
-    "crawl4ai",
+    "crw",
     "web-search",
     "self-hosted"
   ],
