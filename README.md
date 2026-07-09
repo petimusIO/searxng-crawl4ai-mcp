@@ -1,6 +1,6 @@
-# SearXNG + Crawl4AI MCP Server
+# SearXNG + CRW MCP Server
 
-A self-hosted MCP (Model Context Protocol) server providing fast search and reliable web scraping using SearXNG + Crawl4AI stack.
+A self-hosted MCP (Model Context Protocol) server providing fast search and reliable web scraping using SearXNG + CRW (Content Retrieval Worker) stack.
 
 ## 🚀 **Why This Solution?**
 
@@ -11,7 +11,7 @@ This project evolved from limitations found in self-hosted Firecrawl:
 
 **Our solution provides:**
 - ✅ **Truly self-hosted search** via SearXNG (aggregates 70+ search engines)
-- ✅ **Superior scraping** via Crawl4AI (50k+ GitHub stars)
+- ✅ **Superior scraping** via CRW (lightweight, single-binary)
 - ✅ **3x faster** than Claude Code native search tools
 - ✅ **100% reliable** vs failing native WebFetch
 - ✅ **Complete privacy** - no external API dependencies
@@ -21,8 +21,8 @@ This project evolved from limitations found in self-hosted Firecrawl:
 ```
 ┌─────────────┐    ┌──────────────┐    ┌─────────────┐
 │             │    │              │    │             │
-│  SearXNG    │    │  Crawl4AI    │    │   Redis     │
-│  (Search)   │    │  (Scraping)  │    │  (Cache)    │
+│  SearXNG    │    │    CRW       │    │   Redis     │
+│  (Search)   │    │(Content Fetch)│   │  (Cache)    │
 │             │    │              │    │             │
 │  Port 8081  │    │  Port 8001   │    │ Port 6380   │
 └─────────────┘    └──────────────┘    └─────────────┘
@@ -46,7 +46,7 @@ This project evolved from limitations found in self-hosted Firecrawl:
 ## 📦 **Features**
 
 - 🔍 **Fast Search**: SearXNG aggregates 70+ search engines (Google, Bing, DuckDuckGo, etc.)
-- 🕷️ **Advanced Scraping**: Crawl4AI with Playwright for JavaScript-heavy sites
+- 🕷️ **Content Fetching**: CRW (lightweight, single-binary content extraction)
 - ⚡ **High Performance**: Sub-second search, reliable scraping
 - 🐳 **Docker Ready**: Complete Docker Compose orchestration
 - 🔄 **Proxy Support**: Built-in rotating IP proxy integration
@@ -65,12 +65,12 @@ npm run build
 
 ### 2. Start Docker Services
 ```bash
-# Start all services (SearXNG, Crawl4AI, Redis)
+# Start all services (SearXNG, CRW, Redis)
 docker compose up -d
 
 # Verify services are running
 curl http://localhost:8081/search?q=test&format=json  # SearXNG
-curl http://localhost:8001/health                      # Crawl4AI
+curl http://localhost:8001/health                      # CRW
 ```
 
 ### 3. Configure Claude Code MCP
@@ -79,7 +79,7 @@ curl http://localhost:8001/health                      # Crawl4AI
 ```json
 {
   "mcpServers": {
-    "searxng-crawl4ai": {
+    "searxng-crw": {
       "command": "node",
       "args": ["fixed-mcp-server.js"],
       "cwd": "/absolute/path/to/your/project"
@@ -92,7 +92,7 @@ curl http://localhost:8001/health                      # Crawl4AI
 ```json
 {
   "mcpServers": {
-    "searxng-crawl4ai": {
+    "searxng-crw": {
       "command": "node",
       "args": ["fixed-mcp-server.js"],
       "cwd": "/absolute/path/to/your/project",
@@ -126,7 +126,7 @@ Create `.claude/settings.json`:
 ```
 **Returns:** 30+ search results in <1 second from multiple engines
 
-### 2. `crawl4ai_scrape` - Advanced Web Scraping
+### 2. `scrape_url` - URL Scraping
 ```json
 {
   "url": "https://finance.yahoo.com/quote/BTC-USD/",
@@ -179,13 +179,13 @@ Use search_and_scrape to find "Bitcoin RSI technical analysis September 2025"
 |----------|-------------|---------|
 | `PROXY_URL` | Your rotating IP proxy URL | None |
 | `SEARXNG_URL` | SearXNG service URL | http://localhost:8081 |
-| `CRAWL4AI_URL` | Crawl4AI service URL | http://localhost:8001 |
+| `CRW_URL` | CRW service URL | http://localhost:8001 |
 | `MCP_MODE` | Disable console logging for MCP | false |
 
 ### Docker Services
 
 - **SearXNG**: Port 8081 - Metasearch engine
-- **Crawl4AI**: Port 8001 - Web scraping service  
+- **CRW**: Port 8001 - Content fetching service  
 - **Redis**: Port 6380 - Caching layer
 
 ## 🛡️ **Security & Privacy**
@@ -221,10 +221,10 @@ SearXNG automatically queries:
 - Academic sources (ArXiv, Google Scholar)
 
 ### Custom Scraping Options
+CRW returns markdown-formatted content. Additional fetch parameters:
 ```json
 {
   "url": "https://example.com",
-  "formats": ["markdown", "html", "links"],
   "wait_for": 2000,
   "timeout": 30000
 }
@@ -235,13 +235,13 @@ SearXNG automatically queries:
 ### Services Not Starting
 ```bash
 docker compose logs searxng
-docker compose logs crawl4ai
+docker compose logs crw
 ```
 
 ### Port Conflicts
 Edit `docker-compose.yml` to change ports:
 - SearXNG: 8081 → your-port
-- Crawl4AI: 8001 → your-port
+- CRW: 8001 → your-port
 - Redis: 6380 → your-port
 
 ### MCP Connection Issues
