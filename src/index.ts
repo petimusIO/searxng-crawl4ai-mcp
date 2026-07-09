@@ -11,6 +11,7 @@ import { SearXNGClient } from './searxng-client.js';
 import { ScrapeClient, ScrapeClientResponse } from './scrape-client.js';
 import { RedisCache } from './redis-cache.js';
 import { normalizeUrl } from './url-normalizer.js';
+import { extractRelevantPassages } from './passage-extractor.js';
 import express from 'express';
 import http from 'http';
 
@@ -423,11 +424,28 @@ export class SearXNGMCPServer {
         timeout || 30000
       );
 
+      // Extract passages (no query for direct scrape — returns first N paragraphs)
+      let relevantPassages: any = undefined;
+      if (result.data?.markdown) {
+        relevantPassages = extractRelevantPassages(result.data.markdown, '', {
+          topN: RELEVANCE_TOP_N,
+          contextWindow: 0, // no context needed without a query
+          minScore: 0,
+        });
+      }
+
       const response = {
         content: [
           {
             type: 'text',
-            text: JSON.stringify(result, null, 2),
+            text: JSON.stringify(
+              {
+                ...result,
+                relevant_passages: relevantPassages,
+              },
+              null,
+              2
+            ),
           },
         ],
       };
@@ -524,6 +542,7 @@ export class SearXNGMCPServer {
         url: string;
         success: boolean;
         data?: any;
+        relevant_passages?: any;
         error?: string;
         title: string;
         snippet: string;
@@ -545,10 +564,27 @@ export class SearXNGMCPServer {
             if (!isDeep && !scrapeAll && wordCount < FIT_MIN_WORDS) {
               continue;
             }
+
+            const scrapeData = settled.value.data;
+            // Extract relevant passages if we have markdown content
+            let relevantPassages: any = undefined;
+            if (scrapeData?.markdown) {
+              relevantPassages = extractRelevantPassages(
+                scrapeData.markdown,
+                query,
+                {
+                  topN: RELEVANCE_TOP_N,
+                  contextWindow: RELEVANCE_CONTEXT_WINDOW,
+                  minScore: RELEVANCE_MIN_SCORE,
+                }
+              );
+            }
+
             scrapedResults.push({
               url: entry.url,
               success: settled.value.success,
-              data: settled.value.data,
+              data: scrapeData,
+              relevant_passages: relevantPassages,
               title: entry.title,
               snippet: entry.snippet,
             });
@@ -581,7 +617,12 @@ export class SearXNGMCPServer {
                     url: r.url,
                     snippet: r.snippet,
                   },
-                  scraped_content: r.success ? r.data : { error: r.error },
+                  scraped_content: {
+                    success: r.success,
+                    data: r.success ? r.data : undefined,
+                    error: !r.success ? r.error : undefined,
+                    relevant_passages: r.relevant_passages,
+                  },
                   success: r.success,
                 })),
               },
