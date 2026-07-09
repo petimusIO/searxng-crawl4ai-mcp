@@ -38,11 +38,10 @@ export class ScrapeClient {
       logger.info(`Scraping with CRW: ${url}`);
 
       const response: AxiosResponse<any> = await axios.post(
-        `${this.baseUrl}/fetch`,
+        `${this.baseUrl}/v1/scrape`,
         {
           url,
-          wait_for: options.wait_for || 0,
-          timeout: options.timeout || 30000,
+          formats: options.formats || ['markdown'],
         },
         {
           headers: {
