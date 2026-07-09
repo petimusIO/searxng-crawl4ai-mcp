@@ -8,7 +8,8 @@ import {
 import { config } from 'dotenv';
 import { logger } from './logger.js';
 import { SearXNGClient } from './searxng-client.js';
-import { Crawl4AIClient, Crawl4AIResponse } from './crawl4ai-client.js';
+import { ScrapeClient, ScrapeClientResponse } from './scrape-client.js';
+import { RedisCache } from './redis-cache.js';
 import express from 'express';
 import http from 'http';
 
@@ -17,7 +18,6 @@ config();
 // ── Module-level constants ────────────────────────────────────────────
 const DEFAULT_LIMIT       = Number(process.env.WEB_SEARCH_LIMIT)          || 25;
 const FIT_MIN_WORDS       = Number(process.env.FIT_MIN_WORDS)             || 250;
-const CACHE_TTL_MS        = (Number(process.env.WEB_SEARCH_CACHE_TTL)     || 300) * 1000;
 const MAX_RETRIES         = Number(process.env.WEB_SEARCH_MAX_RETRIES)    || 1;
 const CRAWL_PER_URL_TIMEOUT_MS  = Number(process.env.WEB_SEARCH_CRAWL_TIMEOUT_MS)  || 1000;
 const CRAWL_BATCH_TIMEOUT_MS    = Number(process.env.WEB_SEARCH_CRAWL_BATCH_TIMEOUT_MS) || 1500;
@@ -26,31 +26,12 @@ const DEEP_PER_URL_TIMEOUT_MS   = 20_000;
 const DEEP_BATCH_TIMEOUT_MS     = 60_000;
 const DEEP_POOL_SIZE            = 8;
 
-// ── Caching ───────────────────────────────────────────────────────────
-const searchCache  = new Map<string, { data: any; expires: number }>();
-const scrapeCache  = new Map<string, { data: any; expires: number }>();
-
-function getCache(map: Map<string, { data: any; expires: number }>, key: string): any | null {
-  if (process.env.CACHE_ENABLED === 'false') return null;
-  const entry = map.get(key);
-  if (!entry) return null;
-  if (Date.now() > entry.expires) {
-    map.delete(key);
-    return null;
-  }
-  return entry.data;
-}
-
-function setCache(map: Map<string, { data: any; expires: number }>, key: string, data: any, ttl?: number) {
-  if (process.env.CACHE_ENABLED === 'false') return;
-  map.set(key, { data, expires: Date.now() + (ttl ?? CACHE_TTL_MS) });
-}
-
 // ── Server class ──────────────────────────────────────────────────────
 export class SearXNGMCPServer {
   private server: Server;
   private searxng: SearXNGClient;
-  private _crawl4ai?: Crawl4AIClient;
+  private cache: RedisCache;
+  private _scrapeClient?: ScrapeClient;
   // network server state (optional)
   private expressApp?: express.Application;
   private httpServer?: http.Server;
@@ -59,8 +40,8 @@ export class SearXNGMCPServer {
   constructor() {
     this.server = new Server(
       {
-        name: 'searxng-crawl4ai-mcp',
-        version: '2.0.0',
+        name: 'searxng-crw-mcp',
+        version: '3.0.0',
       },
       {
         capabilities: {
@@ -69,10 +50,9 @@ export class SearXNGMCPServer {
       }
     );
 
-    // Initialize SearXNG client
+    // Initialize clients
     this.searxng = new SearXNGClient(process.env.SEARXNG_URL || 'http://localhost:8081');
-
-    // Crawl4AI client is lazily initialized via getCrawl4AIClient()
+    this.cache = new RedisCache(process.env.REDIS_URL);
 
     this.setupToolHandlers();
 
@@ -101,8 +81,8 @@ export class SearXNGMCPServer {
 
       app.get('/health', async (_req, res) => {
         const searx = await this.searxng.healthCheck().catch(() => false);
-        const crawl = await this.getCrawl4AIClient().healthCheck().catch(() => false);
-        return res.status(200).json({ ok: true, searxng: searx, crawl4ai: crawl });
+        const crw = await this.getScrapeClient().healthCheck().catch(() => false);
+        return res.status(200).json({ ok: true, searxng: searx, crw: crw });
       });
 
       app.get(['/mcp/sse', '/sse'], async (req, res) => {
@@ -167,18 +147,19 @@ export class SearXNGMCPServer {
 
       this.expressApp = app;
       this.httpServer = app.listen(port, () => logger.info('mcp:http:server:listen', { port }));
+      this.httpServer.on("error", () => {});
     } catch (err) {
       logger.warn('mcp:http:disabled', { reason: String(err) });
     }
   }
 
-  /** Lazily initialise the Crawl4AI client so env-var fallback order works. */
-  private getCrawl4AIClient(): Crawl4AIClient {
-    if (!this._crawl4ai) {
-      const crawlBase = (process.env.SPIDER_URL || process.env.CRAWL4AI_URL || 'http://localhost:8001').replace(/\/$/, '');
-      this._crawl4ai = new Crawl4AIClient(crawlBase);
+  /** Lazily initialise the scrape client so env-var fallback order works. */
+  private getScrapeClient(): ScrapeClient {
+    if (!this._scrapeClient) {
+      const baseUrl = (process.env.CRW_URL || process.env.CRAWL4AI_URL || 'http://localhost:8001').replace(/\/$/, '');
+      this._scrapeClient = new ScrapeClient(baseUrl);
     }
-    return this._crawl4ai;
+    return this._scrapeClient;
   }
 
   // ── Tool registration ───────────────────────────────────────────────
@@ -220,7 +201,7 @@ export class SearXNGMCPServer {
           },
           {
             name: 'search_and_scrape',
-            description: 'Search the web and automatically scrape top results (combines SearXNG + Crawl4AI)',
+            description: 'Search the web and automatically scrape top results (combines SearXNG + CRW)',
             inputSchema: {
               type: 'object',
               properties: {
@@ -260,7 +241,7 @@ export class SearXNGMCPServer {
           },
           {
             name: 'scrape_url',
-            description: 'Scrape a URL using Crawl4AI (better than Firecrawl for self-hosted)',
+            description: 'Scrape a URL using CRW (fast content extraction)',
             inputSchema: {
               type: 'object',
               properties: {
@@ -325,7 +306,7 @@ export class SearXNGMCPServer {
 
     // Check cache
     const cacheKey = `search:${query}:${categories || ''}:${engines || ''}:${language || 'en'}`;
-    const cached = getCache(searchCache, cacheKey);
+    const cached = await this.cache.get(cacheKey);
     if (cached) return cached;
 
     const limit = Math.min(maxResults || DEFAULT_LIMIT, 50);
@@ -368,7 +349,7 @@ export class SearXNGMCPServer {
             ],
           };
 
-          setCache(searchCache, cacheKey, response);
+          await this.cache.set(cacheKey, response);
           return response;
         }
 
@@ -390,20 +371,20 @@ export class SearXNGMCPServer {
   }
 
   /**
-   * Scrape a single URL via Crawl4AI with caching.
+   * Scrape a single URL via CRW with caching.
    */
   private async handleScrapeUrl(args: any) {
     const { url, formats, wait_for, timeout } = args;
 
-    logger.info(`Scraping with Crawl4AI: ${url}`);
+    logger.info(`Scraping with CRW: ${url}`);
 
     // Check cache
     const cacheKey = `scrape:${url}:${(formats || ['markdown']).join(',')}`;
-    const cached = getCache(scrapeCache, cacheKey);
+    const cached = await this.cache.get(cacheKey);
     if (cached) return cached;
 
     try {
-      const result = await this.getCrawl4AIClient().scrape(url, {
+      const result = await this.getScrapeClient().scrape(url, {
         formats: formats || ['markdown'],
         wait_for: wait_for || 0,
         timeout: timeout || 30000,
@@ -419,11 +400,11 @@ export class SearXNGMCPServer {
         ],
       };
 
-      setCache(scrapeCache, cacheKey, response);
+      await this.cache.set(cacheKey, response);
       return response;
     } catch (error) {
-      logger.error('Crawl4AI scrape failed:', error);
-      throw new Error(`Crawl4AI scrape failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      logger.error('CRW scrape failed:', error);
+      throw new Error(`CRW scrape failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
   }
 
@@ -445,7 +426,7 @@ export class SearXNGMCPServer {
     try {
       // 1. Check cache for search results
       const cacheKey = `search_and_scrape:${query}:${maxResults || ''}:${mode || ''}:${scrapeAll || ''}:${categories || ''}`;
-      const cached = getCache(searchCache, cacheKey);
+      const cached = await this.cache.get(cacheKey);
       if (cached) return cached;
 
       // 2. Search with optional retry
@@ -504,7 +485,7 @@ export class SearXNGMCPServer {
         urlsToScrape = urlsToScrape.filter((entry) => !entry.snippet || entry.snippet.length < 200);
       }
 
-      logger.info(`Scraping ${urlsToScrape.length} of ${topResults.length} URLs with Crawl4AI (pool: ${poolSize})`);
+      logger.info(`Scraping ${urlsToScrape.length} of ${topResults.length} URLs with CRW (pool: ${poolSize})`);
 
       // 5. Worker pool – scrape each URL individually for per-result error handling
       const scrapedResults: Array<{
@@ -579,7 +560,7 @@ export class SearXNGMCPServer {
         ],
       };
 
-      setCache(searchCache, cacheKey, response);
+      await this.cache.set(cacheKey, response);
       return response;
     } catch (error) {
       logger.error('Search and scrape workflow failed:', error);
@@ -588,7 +569,7 @@ export class SearXNGMCPServer {
   }
 
   /**
-   * Scrape a single URL and return the raw Crawl4AI response.
+   * Scrape a single URL and return the raw ScrapeClient response.
    * Results are cached per URL to avoid repeat work across calls.
    */
   private async scrapeSingleUrl(
@@ -596,21 +577,21 @@ export class SearXNGMCPServer {
     timeout: number,
     isDeep: boolean = false,
     formats?: string[]
-  ): Promise<Crawl4AIResponse> {
+  ): Promise<ScrapeClientResponse> {
     const outputFormats = formats || ['markdown'];
 
     const cacheKey = `scrape_single:${url}:${outputFormats.join(',')}`;
-    const cached = getCache(scrapeCache, cacheKey);
+    const cached = await this.cache.get(cacheKey);
     if (cached) return cached;
 
-    const result = await this.getCrawl4AIClient().scrape(url, {
+    const result = await this.getScrapeClient().scrape(url, {
       formats: outputFormats,
       timeout,
       wait_for: 0,
       proxy_url: process.env.PROXY_URL,
     });
 
-    setCache(scrapeCache, cacheKey, result);
+    await this.cache.set(cacheKey, result);
     return result;
   }
 
@@ -619,7 +600,7 @@ export class SearXNGMCPServer {
   async run() {
     const transport = new StdioServerTransport();
     await this.server.connect(transport);
-    logger.info('SearXNG + Crawl4AI MCP Server started');
+    logger.info('SearXNG + CRW MCP Server started');
   }
 }
 
