@@ -6,7 +6,10 @@
  * relevant passages with surrounding context.
  */
 
-import BM25 from 'okapibm25';
+import _BM25 from 'okapibm25';
+// CJS interop: Node ESM binds the module namespace (BM25 at .default),
+// while bundlers (esbuild/vite) apply __esModule heuristics and bind .default directly.
+const BM25 = (typeof _BM25 === 'function' ? _BM25 : (_BM25 as any).default) as typeof _BM25;
 
 export interface PassageExtractionOptions {
   topN?: number;
