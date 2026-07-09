@@ -1,4 +1,4 @@
-# SearXNG + Crawl4AI MCP - Truly Self-Hosted Search & Scrape Stack
+# SearXNG + CRW MCP - Truly Self-Hosted Search & Scrape Stack
 
 services:
 
@@ -65,7 +65,7 @@ services:
     container_name: headless-browser
     hostname: headless-browser
     ports:
-      - "9222:9222"
+      - "9223:9223"
       - "6000:6000"
     environment:
       - REMOTE_ADDRESS=0.0.0.0
@@ -74,7 +74,7 @@ services:
       - search-net
     restart: unless-stopped
     healthcheck:
-      test: curl -sf http://localhost:6000/json/version || exit 1
+      test: curl -sf http://localhost:9223/json/version || exit 1
       interval: 15s
       timeout: 5s
       retries: 3
@@ -95,29 +95,25 @@ services:
       - search-net
     restart: unless-stopped
 
-  # Crawl4AI service for web scraping
-  crawl4ai:
-    build:
-      context: .
-      dockerfile: Dockerfile.crawl4ai
-    container_name: crawl4ai
+  # CRW - Content Retrieval Worker (replaces Crawl4AI)
+  crw:
+    image: ghcr.io/us/crw:latest
+    container_name: crw
     ports:
-      - "8001:8000"
+      - "8001:3000"    # CRW container port is 3000
     environment:
-      - PROXY_URL=${PROXY_URL}
-      - CRAWL4AI_LOG_LEVEL=INFO
+      - CRW_SEARCH__SEARXNG_URL=http://searxng:8080   # double underscore
     networks:
       - search-net
-      - coolify
     restart: unless-stopped
-    depends_on:
-      redis:
-        condition: service_healthy
-    volumes:
-      - ./logs:/app/logs
+    healthcheck:
+      test: curl -sf http://localhost:3000/health || exit 1
+      interval: 15s
+      timeout: 5s
+      retries: 3
 
 
-  # MCP Server — orchestrates SearXNG + Crawl4AI, exposes MCP tools
+  # MCP Server — orchestrates SearXNG + CRW, exposes MCP tools
   mcp-server:
     build:
       context: .
@@ -128,14 +124,15 @@ services:
     environment:
       - SEARXNG_URL=http://searxng:8080
       - SPIDER_URL=http://spider-scrape:8002
-      - CRAWL4AI_URL=http://crawl4ai:8000
+      - CRW_URL=http://crw:3000
+      - REDIS_URL=redis://redis:6379/0
       - MCP_HTTP_PORT=3003
       - MCP_INTERNAL_TOKEN=${MCP_INTERNAL_TOKEN:-}
       - LOG_LEVEL=info
     depends_on:
       searxng:
         condition: service_healthy
-      crawl4ai:
+      crw:
         condition: service_started
     networks:
       - search-net
