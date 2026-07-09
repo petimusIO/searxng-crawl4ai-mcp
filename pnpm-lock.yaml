@@ -23,6 +23,9 @@ importers:
       ioredis:
         specifier: ^5.11.1
         version: 5.11.1
+      okapibm25:
+        specifier: ^1.4.1
+        version: 1.4.1
       winston:
         specifier: ^3.11.0
         version: 3.19.0
@@ -964,6 +967,9 @@ packages:
   object-inspect@1.13.4:
     resolution: {integrity: sha512-W67iLl4J2EXEGTbfeHCffrjDfitvLANg0UlX3wFUUSTx92KXRFegMHUVgSqE+wvhAbi4WqjGg9czysTV2Epbew==}
     engines: {node: '>= 0.4'}
+
+  okapibm25@1.4.1:
+    resolution: {integrity: sha512-UHmeH4MAtZXGFVncwbY7pfFvDVNxpsyM3W66aGPU0SHj1+ld59ty+9lJ0ifcrcnPUl1XdYoDgb06ObyCnpTs3g==}
 
   on-finished@2.4.1:
     resolution: {integrity: sha512-oVlzkg3ENAhCk2zdv7IJwd/QUD4z2RxRwpkcGY8psCVcCYZNq4wYnVWALHM+brtuJjePWiYF/ClmuDr8Ch5+kg==}
@@ -2092,6 +2098,8 @@ snapshots:
       path-key: 4.0.0
 
   object-inspect@1.13.4: {}
+
+  okapibm25@1.4.1: {}
 
   on-finished@2.4.1:
     dependencies:

@@ -1,12 +1,12 @@
 /**
- * Passage Extractor: TF-IDF-based relevance scoring for scraped markdown.
+ * Passage Extractor: BM25-based relevance scoring for scraped markdown.
  *
- * Splits markdown into paragraphs, scores each against a query using TF-IDF,
- * and returns the top-N most relevant passages with surrounding context.
- *
- * Zero dependencies, pure TypeScript. Designed for millisecond execution
- * on typical web pages.
+ * Splits markdown into paragraphs, scores each against a query using
+ * Okapi BM25 (via okapibm25 library), and returns the top-N most
+ * relevant passages with surrounding context.
  */
+
+import BM25 from 'okapibm25';
 
 export interface PassageExtractionOptions {
   topN?: number;
@@ -33,13 +33,13 @@ export interface PassageExtractionResult {
 export function preprocessText(text: string): string[] {
   return text
     .toLowerCase()
-    .replace(/[^a-z0-9\s]/g, '')  // strip punctuation
+    .replace(/[^a-z0-9\s]/g, '')
     .split(/\s+/)
-    .filter(Boolean);              // remove empty tokens
+    .filter(Boolean);
 }
 
 /**
- * Extract relevant passages from markdown using TF-IDF scoring.
+ * Extract relevant passages from markdown using BM25 scoring.
  */
 export function extractRelevantPassages(
   markdown: string,
@@ -65,10 +65,7 @@ export function extractRelevantPassages(
     };
   }
 
-  // 2. Preprocess each paragraph
-  const processed: string[][] = rawParagraphs.map(preprocessText);
-
-  // 3. Preprocess query terms (exclude stop words)
+  // 2. Tokenize query (remove stop words for better signal)
   const STOP_WORDS = new Set([
     'a', 'an', 'the', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for',
     'of', 'with', 'by', 'from', 'is', 'are', 'was', 'were', 'be', 'been',
@@ -93,48 +90,22 @@ export function extractRelevantPassages(
     };
   }
 
-  // 4. Compute IDF for each unique term across all paragraphs
-  const totalParagraphs = rawParagraphs.length;
-  const uniqueTerms = new Set<string>();
-  const docFreq = new Map<string, number>();
+  // 3. Score paragraphs using BM25 (no sorter = scores array)
+  // BM25 is case-sensitive internally, so pass lowercased text to match lowercased query terms
+  const normalizedParagraphs = rawParagraphs.map(p => p.toLowerCase());
+  const scores = BM25(normalizedParagraphs, queryTerms, { k1: 1.2, b: 0.75 }) as number[];
 
-  for (const tokens of processed) {
-    const seen = new Set<string>();
-    for (const token of tokens) {
-      uniqueTerms.add(token);
-      if (!seen.has(token)) {
-        seen.add(token);
-        docFreq.set(token, (docFreq.get(token) || 0) + 1);
-      }
-    }
-  }
+  const scored: ScoredPassage[] = rawParagraphs.map((text, idx) => ({
+    text,
+    score: scores[idx] ?? 0,
+    position: idx,
+  }));
 
-  const idf = new Map<string, number>();
-  for (const term of uniqueTerms) {
-    const df = docFreq.get(term) || 1;
-    idf.set(term, Math.log(totalParagraphs / df));
-  }
-
-  // 5. Score each paragraph
-  const scored: ScoredPassage[] = rawParagraphs.map((text, idx) => {
-    const tokens = processed[idx];
-    const totalTerms = tokens.length || 1; // avoid division by zero
-
-    let score = 0;
-    for (const queryTerm of queryTerms) {
-      const tf = tokens.filter(t => t === queryTerm).length / totalTerms;
-      const termIdf = idf.get(queryTerm) || 0;
-      score += tf * termIdf;
-    }
-
-    return { text, score, position: idx };
-  });
-
-  // 6. Sort by score descending, take top N
+  // 4. Sort by score descending, take top N
   scored.sort((a, b) => b.score - a.score);
   const topPassages = scored.slice(0, topN).filter(p => p.score >= minScore);
 
-  // 7. Add context window (surrounding paragraphs)
+  // 5. Add context window (surrounding paragraphs)
   if (contextWindow > 0 && topPassages.length > 0) {
     const included = new Set(topPassages.map(p => p.position));
     const withContext: ScoredPassage[] = [];
@@ -147,7 +118,7 @@ export function extractRelevantPassages(
           included.add(pos);
           withContext.push({
             text: rawParagraphs[pos],
-            score: passage.score * 0.1, // de-prioritize context paragraphs
+            score: passage.score * 0.1,
             position: pos,
           });
         }
@@ -176,7 +147,7 @@ export function extractRelevantPassages(
     return {
       passages: withContext,
       query,
-      total_passages: totalParagraphs,
+      total_passages: rawParagraphs.length,
       top_n: topN,
     };
   }
@@ -184,7 +155,7 @@ export function extractRelevantPassages(
   return {
     passages: topPassages,
     query,
-    total_passages: totalParagraphs,
+    total_passages: rawParagraphs.length,
     top_n: topN,
   };
 }

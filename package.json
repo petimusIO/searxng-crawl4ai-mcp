@@ -19,6 +19,7 @@
     "dotenv": "^16.3.0",
     "express": "^4.18.2",
     "ioredis": "^5.11.1",
+    "okapibm25": "^1.4.1",
     "winston": "^3.11.0"
   },
   "devDependencies": {
