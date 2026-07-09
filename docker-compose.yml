@@ -107,7 +107,7 @@ services:
       - search-net
     restart: unless-stopped
     healthcheck:
-      test: curl -sf http://localhost:3000/health || exit 1
+      test: ["CMD", "wget", "-qO-", "http://localhost:3000/health"]
       interval: 15s
       timeout: 5s
       retries: 3
@@ -119,14 +119,16 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: mcp-server
+    volumes:
+      - mcp-logs:/app/logs
     ports:
-      - "3003:3003"
+      - "3004:3004"
     environment:
       - SEARXNG_URL=http://searxng:8080
       - SPIDER_URL=http://spider-scrape:8002
       - CRW_URL=http://crw:3000
       - REDIS_URL=redis://redis:6379/0
-      - MCP_HTTP_PORT=3003
+      - MCP_HTTP_PORT=3004
       - MCP_INTERNAL_TOKEN=${MCP_INTERNAL_TOKEN:-}
       - LOG_LEVEL=info
     depends_on:
@@ -140,6 +142,7 @@ services:
     restart: unless-stopped
 
 volumes:
+  mcp-logs:
   redis_data:
 
 networks:
