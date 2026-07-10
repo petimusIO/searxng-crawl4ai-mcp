@@ -65,44 +65,6 @@ services:
       - search-net
     restart: unless-stopped
 
-  # Headless browser pool for Spider (persistent Chrome instances)
-  headless-browser:
-    build:
-      context: .
-      dockerfile: Dockerfile.headless-browser
-    container_name: headless-browser
-    hostname: headless-browser
-    ports:
-      - "9223:9223"
-      - "6000:6000"
-    environment:
-      - REMOTE_ADDRESS=0.0.0.0
-      - HOSTNAME_OVERRIDE=headless-browser
-    networks:
-      - search-net
-    restart: unless-stopped
-    healthcheck:
-      test: curl -sf http://localhost:9223/json/version || exit 1
-      interval: 15s
-      timeout: 5s
-      retries: 3
-    cap_add:
-      - SYS_ADMIN
-
-  # Spider-scrape service (HTTP-only, Rust web scraper)
-  spider-scrape:
-    build:
-      context: /home/triiq/projects/spider-scrape
-      dockerfile: Dockerfile
-    container_name: spider-scrape
-    ports:
-      - "8002:8002"
-    environment:
-      - RUST_LOG=info
-    networks:
-      - search-net
-    restart: unless-stopped
-
   # CRW - Content Retrieval Worker (replaces Crawl4AI)
   crw:
     image: ghcr.io/us/crw:latest
@@ -148,7 +110,6 @@ services:
       - "3004:3004"
     environment:
       - SEARXNG_URL=http://searxng:8080
-      - SPIDER_URL=http://spider-scrape:8002
       - CRW_URL=http://crw:3000
       - REDIS_URL=redis://redis:6379/0
       - MCP_HTTP_PORT=3004
