@@ -106,7 +106,8 @@ export class SearXNGMCPServer {
       app.get('/health', async (_req, res) => {
         const searx = await this.searxng.healthCheck().catch(() => false);
         const crw = await this.getScrapeClient().healthCheck().catch(() => false);
-        return res.status(200).json({ ok: true, searxng: searx, crw: crw });
+        const fourget = await this.fourget.healthCheck().catch(() => false);
+        return res.status(200).json({ ok: true, searxng: searx, crw, fourget });
       });
 
       app.get(['/mcp/sse', '/sse'], async (req, res) => {
