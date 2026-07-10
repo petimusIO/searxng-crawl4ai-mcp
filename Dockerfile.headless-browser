@@ -1,0 +1,45 @@
+# ---------------------------------------------------------------------------
+# headless-browser — Persistent Chrome pool for Spider using headless_browser
+# Builds headless_browser from crates.io, bundles Chromium, exposes:
+#   9222 — TCP proxy (Spider connects here)
+#   6000 — Management API / health check
+# ---------------------------------------------------------------------------
+
+FROM rust:1-slim-bookworm AS builder
+
+RUN apt-get update && apt-get install -y pkg-config libssl-dev && \
+    rm -rf /var/lib/apt/lists/*
+
+RUN cargo install headless_browser --no-default-features
+
+FROM debian:bookworm-slim
+
+RUN apt-get update && apt-get install -y \
+    chromium \
+    chromium-l10n \
+    fonts-liberation \
+    fonts-noto-color-emoji \
+    ca-certificates \
+    curl \
+    tini \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /usr/local/cargo/bin/headless_browser /usr/local/bin/headless_browser
+
+RUN adduser --disabled-password --gecos "" chrome && \
+    mkdir -p /usr/src/app && \
+    chown -R chrome:chrome /usr/src/app
+
+ENV CHROME_BIN=/usr/bin/chromium \
+    CHROME_PATH=/usr/lib/chromium/ \
+    REMOTE_ADDRESS=0.0.0.0 \
+    LAUNCH=init \
+    DEFAULT_PORT=9223 \
+    DEFAULT_PORT_SERVER=6000
+
+EXPOSE 9222 6000
+
+HEALTHCHECK --interval=10s --timeout=5s --retries=5 \
+    CMD curl -sf http://localhost:6000/health || exit 1
+
+ENTRYPOINT ["tini", "--", "headless_browser", "chromium", "0.0.0.0", "init", "9223", "6000", "true"]

@@ -14,7 +14,7 @@ process.env.MCP_MODE = '1';
 process.env.SEARXNG_URL = 'http://localhost:8081';
 process.env.SPIDER_URL = 'http://localhost:8002';
 process.env.CRW_URL = 'http://localhost:8001';
-process.env.REDIS_URL = 'redis://localhost:6379';
+process.env.REDIS_URL = 'redis://localhost:6380';
 process.env.WEB_SEARCH_CRAWL_TIMEOUT_MS = '1000';
 process.env.WEB_SEARCH_CRAWL_BATCH_TIMEOUT_MS = '1500';
 

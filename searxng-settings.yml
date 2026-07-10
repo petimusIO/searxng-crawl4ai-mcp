@@ -1,16 +1,17 @@
-# SearXNG Configuration for MCP Server
+# SearXNG Configuration — Maxed Out
 use_default_settings: true
 general:
   debug: false
-  instance_name: "SearXNG MCP"
+  instance_name: "Seek Search"
   donation_url: false
   contact_url: false
-  enable_stats: false
+  enable_stats: true
 
 search:
   safe_search: 0
   autocomplete: "google"
   default_lang: "en"
+  max_results: 50
   formats:
     - html
     - json
@@ -23,6 +24,8 @@ server:
   image_proxy: true
   http_protocol_version: "1.1"
   method: "POST"
+  limiter: false
+  # Don't rate-limit ourselves — we're the only consumer
 
 ui:
   static_use_hash: false
@@ -35,49 +38,151 @@ ui:
   theme_args:
     simple_style: auto
 
-# Configure outgoing requests (no proxy for initial testing)
 outgoing:
-  request_timeout: 10.0
-  max_request_timeout: 15.0
-  pool_connections: 100
-  pool_maxsize: 20
+  request_timeout: 5.0
+  max_request_timeout: 8.0
+  pool_connections: 200
+  pool_maxsize: 50
+  enable_http2: true
+  useragent_suffix: ""
+  proxies:
+    all://:
+      - "http://vnjkzfut:k2ul29u3o1t3@191.96.254.138:6185"
+      - "http://vnjkzfut:k2ul29u3o1t3@38.154.185.97:6370"
+      - "http://vnjkzfut:k2ul29u3o1t3@198.23.243.226:6361"
+      - "http://vnjkzfut:k2ul29u3o1t3@31.56.127.193:7684"
+      - "http://vnjkzfut:k2ul29u3o1t3@31.59.20.176:6754"
+      - "http://vnjkzfut:k2ul29u3o1t3@45.38.107.97:6014"
+      - "http://vnjkzfut:k2ul29u3o1t3@198.105.121.200:6462"
+      - "http://vnjkzfut:k2ul29u3o1t3@64.137.96.74:6641"
+      - "http://vnjkzfut:k2ul29u3o1t3@84.247.60.125:6095"
+      - "http://vnjkzfut:k2ul29u3o1t3@142.111.67.146:5611"
+      - "http://811a223c3634055a1ab9:0780224cc80bb1ed@gw.dataimpulse.com:823"
+# Valkey/Redis caching — already running
+redis:
+  url: redis://redis:6379/0
 
-# Enabled engines
+# ===== ENGINES =====
 engines:
-  # Web search engines
+  # --- Web search (tier 1 — best results) ---
   - name: google
     engine: google
     shortcut: go
+    timeout: 5.0
+    disabled: false
     use_mobile_ui: false
 
   - name: bing
     engine: bing
     shortcut: bi
+    timeout: 5.0
+    disabled: false
 
   - name: duckduckgo
     engine: duckduckgo
     shortcut: ddg
+    timeout: 5.0
+    disabled: false
+
+  - name: brave
+    engine: brave
+    shortcut: br
+    timeout: 5.0
+    disabled: false
 
   - name: startpage
     engine: startpage
     shortcut: sp
     timeout: 6.0
+    disabled: false
 
   - name: qwant
     engine: qwant
     shortcut: qw
     categories: general
+    timeout: 5.0
     disabled: false
 
-  # Tech engines
+  - name: karmasearch
+    engine: karmasearch
+    shortcut: km
+    timeout: 5.0
+    disabled: false
+
+  # --- Reference (tier 2 — authoritative sources) ---
+  - name: wikipedia
+    engine: wikipedia
+    shortcut: wp
+    timeout: 4.0
+    disabled: false
+
+  - name: wikidata
+    engine: wikidata
+    shortcut: wd
+    timeout: 4.0
+    disabled: false
+
+  # --- Tech & development ---
   - name: github
     engine: github
     shortcut: gh
+    timeout: 5.0
+    disabled: false
 
   - name: stackoverflow
     engine: stackoverflow
     shortcut: so
-    timeout: 10
+    timeout: 10.0
+    disabled: false
 
-redis:
-  url: redis://redis:6379/0
+  - name: gitlab
+    engine: gitlab
+    shortcut: gl
+    timeout: 5.0
+    disabled: false
+
+  # --- Academic & science ---
+  - name: arxiv
+    engine: arxiv
+    shortcut: ar
+    timeout: 6.0
+    disabled: false
+
+  - name: pubmed
+    engine: pubmed
+    shortcut: pm
+    timeout: 6.0
+    disabled: false
+
+  - name: semantic_scholar
+    engine: semantic_scholar
+    shortcut: ss
+    timeout: 6.0
+    disabled: false
+
+  # --- Programming docs ---
+  - name: devdocs
+    engine: devdocs
+    shortcut: dd
+    timeout: 5.0
+    disabled: false
+
+  - name: devto
+    engine: devto
+    shortcut: dv
+    timeout: 5.0
+    disabled: false
+
+  # --- News ---
+  - name: news
+    engine: news
+    shortcut: nw
+    timeout: 5.0
+    disabled: false
+
+  - name: hackernews
+    engine: hackernews
+    shortcut: hn
+    timeout: 5.0
+    disabled: true
+
