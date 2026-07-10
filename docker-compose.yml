@@ -57,6 +57,14 @@ services:
       timeout: 3s
       retries: 3
 
+  # Lightpanda - lightweight headless browser for JS rendering
+  lightpanda:
+    image: lightpanda/browser:nightly
+    container_name: lightpanda
+    networks:
+      - search-net
+    restart: unless-stopped
+
   # Headless browser pool for Spider (persistent Chrome instances)
   headless-browser:
     build:
@@ -103,6 +111,9 @@ services:
       - "8001:3000"    # CRW container port is 3000
     environment:
       - CRW_SEARCH__SEARXNG_URL=http://searxng:8080   # double underscore
+      - CRW_CRAWLER__STEALTH__ENABLED=true
+      - CRW_RENDERER__MODE=auto
+      - CRW_RENDERER__LIGHTPANDA__WS_URL=ws://lightpanda:9222/
     networks:
       - search-net
     restart: unless-stopped
@@ -112,6 +123,18 @@ services:
       timeout: 5s
       retries: 3
 
+  # 4get — secondary metasearch aggregator (supplements SearXNG)
+  fourget:
+    image: luuul/4get:latest
+    container_name: fourget
+    ports:
+      - "8090:80"
+    environment:
+      - FOURGET_PROTO=http
+      - FOURGET_SERVER_NAME=4get.local
+    networks:
+      - search-net
+    restart: unless-stopped
 
   # MCP Server — orchestrates SearXNG + CRW, exposes MCP tools
   mcp-server:
@@ -131,6 +154,7 @@ services:
       - MCP_HTTP_PORT=3004
       - MCP_INTERNAL_TOKEN=${MCP_INTERNAL_TOKEN:-}
       - LOG_LEVEL=info
+      - FOURGET_URL=http://fourget:80
     depends_on:
       searxng:
         condition: service_healthy
