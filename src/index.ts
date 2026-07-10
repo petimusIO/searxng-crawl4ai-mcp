@@ -12,6 +12,7 @@ import { ScrapeClient, ScrapeClientResponse } from './scrape-client.js';
 import { RedisCache } from './redis-cache.js';
 import { normalizeUrl } from './url-normalizer.js';
 import { extractRelevantPassages } from './passage-extractor.js';
+import { stripMarkdownFromData, ContentMode } from './content-utils.js';
 import express from 'express';
 import http from 'http';
 
@@ -449,9 +450,8 @@ export class SearXNGMCPServer {
 
       // Strip full markdown if not in 'full' mode
       const responseData: any = { ...result };
-      if (content_mode && content_mode !== 'full' && responseData.data) {
-        const { markdown: _, ...rest } = responseData.data;
-        responseData.data = rest;
+      if (responseData.data) {
+        responseData.data = stripMarkdownFromData(responseData.data, content_mode);
       }
 
       const response = {
@@ -633,12 +633,7 @@ export class SearXNGMCPServer {
                 scraped_count: scrapedResults.filter((r) => r.success).length,
                 elapsed_ms: Date.now() - startTime,
                 results: scrapedResults.map((r) => {
-                  // Strip full markdown from data if not in 'full' mode
-                  let resultData = r.data;
-                  if (contentMode !== 'full' && resultData) {
-                    const { markdown: _, ...rest } = resultData;
-                    resultData = rest;
-                  }
+                  const resultData = stripMarkdownFromData(r.data, contentMode as ContentMode);
 
                   return {
                     search_info: {
