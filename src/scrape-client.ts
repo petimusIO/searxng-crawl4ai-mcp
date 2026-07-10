@@ -8,6 +8,23 @@ export interface ScrapeOptions {
   proxy_url?: string;
 }
 
+export interface MapOptions {
+  maxDepth?: number;        // default: 2
+  useSitemap?: boolean;     // default: true
+  crawlFallback?: boolean;  // default: true
+  timeout?: number;         // default: 120 (seconds)
+}
+
+export interface MapResponse {
+  success: boolean;
+  data: {
+    links: string[];
+    droppedActionCount: number;
+    strippedTrackingCount: number;
+  };
+  error?: string;
+}
+
 export interface ScrapeClientResponse {
   success: boolean;
   url: string;
@@ -66,6 +83,43 @@ export class ScrapeClient {
       return response.status === 200;
     } catch (error) {
       return false;
+    }
+  }
+
+  async map(url: string, options: MapOptions = {}): Promise<MapResponse> {
+    try {
+      logger.info(`Mapping site with CRW: ${url}`);
+
+      const response = await axios.post(
+        `${this.baseUrl}/v1/map`,
+        {
+          url,
+          maxDepth: options.maxDepth ?? 2,
+          useSitemap: options.useSitemap ?? true,
+          crawlFallback: options.crawlFallback ?? true,
+        },
+        {
+          headers: { 'Content-Type': 'application/json' },
+          timeout: (options.timeout || 120) * 1000, // seconds to ms
+        }
+      );
+
+      return {
+        success: response.data.success ?? true,
+        data: {
+          links: response.data.data?.links ?? response.data.links ?? [],
+          droppedActionCount: response.data.data?.droppedActionCount ?? 0,
+          strippedTrackingCount: response.data.data?.strippedTrackingCount ?? 0,
+        },
+        error: response.data.error,
+      };
+    } catch (error: any) {
+      logger.error(`CRW map error for ${url}:`, error);
+      return {
+        success: false,
+        data: { links: [], droppedActionCount: 0, strippedTrackingCount: 0 },
+        error: error.message || 'Map failed',
+      };
     }
   }
 
