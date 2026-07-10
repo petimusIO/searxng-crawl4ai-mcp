@@ -105,9 +105,9 @@ export class SearXNGMCPServer {
 
       app.get('/health', async (_req, res) => {
         const searx = await this.searxng.healthCheck().catch(() => false);
-        const crw = await this.getScrapeClient().healthCheck().catch(() => false);
         const fourget = await this.fourget.healthCheck().catch(() => false);
-        return res.status(200).json({ ok: true, searxng: searx, crw, fourget });
+        const crw = await this.getScrapeClient().healthCheck().catch(() => false);
+        return res.status(200).json({ ok: true, searxng: searx, fourget: fourget, crw: crw });
       });
 
       app.get(['/mcp/sse', '/sse'], async (req, res) => {
@@ -241,6 +241,11 @@ export class SearXNGMCPServer {
                   type: 'string',
                   description: 'Comma-separated list of engines (e.g., "google,bing")',
                 },
+                scraper: {
+                  type: 'string',
+                  description: '4get scraper engine (e.g., "brave", "google", "bing"). Default: "brave"',
+                  default: 'brave',
+                },
                 language: {
                   type: 'string',
                   description: 'Search language (en, es, fr, etc.)',
@@ -298,6 +303,11 @@ export class SearXNGMCPServer {
                   enum: ['full', 'relevant_only', 'snippet'],
                   description: 'Response content mode: "full" (everything), "relevant_only" (no full markdown), "snippet" (compact, no context)',
                   default: 'full',
+                },
+                scraper: {
+                  type: 'string',
+                  description: '4get scraper engine (e.g., "brave", "google", "bing"). Default: "brave"',
+                  default: 'brave',
                 },
               },
               required: ['query'],
