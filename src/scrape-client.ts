@@ -25,6 +25,42 @@ export interface MapResponse {
   error?: string;
 }
 
+export interface CrawlOptions {
+  maxPages?: number;          // default: 100
+  maxDepth?: number;          // default: 2
+  scrapeOptions?: {
+    formats?: string[];
+    onlyMainContent?: boolean;
+  };
+}
+
+export interface CrawlAcceptedResponse {
+  success: boolean;
+  id: string;
+  url: string;  // polling URL (relative)
+  error?: string;
+}
+
+export interface CrawlStatusResponse {
+  success: boolean;
+  status: 'scraping' | 'completed' | 'failed';
+  total: number;
+  completed: number;
+  data?: Array<{
+    markdown: string;
+    metadata: {
+      title: string;
+      description: string | null;
+      sourceURL: string;
+      language: string;
+      statusCode: number;
+      renderedWith: string;
+      elapsedMs: number;
+    };
+  }>;
+  error?: string;
+}
+
 export interface ScrapeClientResponse {
   success: boolean;
   url: string;
@@ -119,6 +155,106 @@ export class ScrapeClient {
         success: false,
         data: { links: [], droppedActionCount: 0, strippedTrackingCount: 0 },
         error: error.message || 'Map failed',
+      };
+    }
+  }
+
+  async crawl(url: string, options: CrawlOptions = {}): Promise<CrawlAcceptedResponse> {
+    try {
+      logger.info(`Starting crawl with CRW: ${url}`);
+
+      const payload: Record<string, unknown> = { url };
+      if (options.maxPages != null) payload.maxPages = options.maxPages;
+      if (options.maxDepth != null) payload.maxDepth = options.maxDepth;
+      if (options.scrapeOptions) {
+        payload.scrapeOptions = {};
+        if (options.scrapeOptions.formats) {
+          (payload.scrapeOptions as Record<string, unknown>).formats = options.scrapeOptions.formats;
+        }
+        if (options.scrapeOptions.onlyMainContent != null) {
+          (payload.scrapeOptions as Record<string, unknown>).onlyMainContent = options.scrapeOptions.onlyMainContent;
+        }
+      }
+
+      const response = await axios.post(
+        `${this.baseUrl}/v1/crawl`,
+        payload,
+        {
+          headers: { 'Content-Type': 'application/json' },
+          timeout: 30000, // initial POST timeout
+        }
+      );
+
+      return {
+        success: response.data.success ?? true,
+        id: response.data.id ?? '',
+        url: response.data.url ?? `${this.baseUrl}/v1/crawl/${response.data.id}`,
+        error: response.data.error,
+      };
+    } catch (error: any) {
+      logger.error(`CRW crawl error for ${url}:`, error);
+      return {
+        success: false,
+        id: '',
+        url: '',
+        error: error.message || 'Crawl failed',
+      };
+    }
+  }
+
+  async crawlStatus(jobId: string): Promise<CrawlStatusResponse> {
+    try {
+      const response = await axios.get(
+        `${this.baseUrl}/v1/crawl/${jobId}`,
+        { timeout: 10000 }
+      );
+
+      // CRW returns raw strings for invalid UUIDs — wrap in try/catch
+      let data: any;
+      try {
+        data = typeof response.data === 'string' ? JSON.parse(response.data) : response.data;
+      } catch {
+        logger.warn(`CRW crawlStatus for ${jobId}: response is not JSON: ${String(response.data).slice(0, 200)}`);
+        return {
+          success: false,
+          status: 'failed',
+          total: 0,
+          completed: 0,
+          data: [],
+          error: 'Invalid JSON response from CRW',
+        };
+      }
+
+      return {
+        success: data.success ?? true,
+        status: data.status ?? 'scraping',
+        total: data.total ?? 0,
+        completed: data.completed ?? 0,
+        data: data.data ?? [],
+        error: data.error,
+      };
+    } catch (error: any) {
+      // Axios-level error (network, timeout, 4xx)
+      logger.error(`CRW crawlStatus error for ${jobId}:`, error);
+      const statusCode = error.response?.status;
+      // 400 likely means invalid UUID — treat as failed
+      if (statusCode === 400 || statusCode === 404) {
+        return {
+          success: false,
+          status: 'failed',
+          total: 0,
+          completed: 0,
+          data: [],
+          error: `Crawl job not found: ${error.message}`,
+        };
+      }
+      return {
+        success: false,
+        status: 'failed',
+        total: 0,
+        completed: 0,
+        data: [],
+        error: error.message || 'Status check failed',
       };
     }
   }

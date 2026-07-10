@@ -82,3 +82,147 @@ describe('ScrapeClient.map', () => {
     expect(result.data.links).toEqual(['https://example.com/page1']);
   });
 });
+
+describe('ScrapeClient.crawl', () => {
+  let client: ScrapeClient;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    client = new ScrapeClient('http://localhost:8001');
+  });
+
+  it('calls POST /v1/crawl and returns job ID', async () => {
+    mockedAxios.post.mockResolvedValueOnce({
+      data: {
+        success: true,
+        id: 'crawl-job-123',
+      },
+    });
+
+    const result = await client.crawl('https://example.com');
+
+    expect(mockedAxios.post).toHaveBeenCalledWith(
+      'http://localhost:8001/v1/crawl',
+      { url: 'https://example.com' },
+      expect.any(Object)
+    );
+    expect(result.success).toBe(true);
+    expect(result.id).toBe('crawl-job-123');
+  });
+
+  it('passes maxPages, maxDepth, and scrapeOptions', async () => {
+    mockedAxios.post.mockResolvedValueOnce({
+      data: { success: true, id: 'job-1', url: '...' },
+    });
+
+    await client.crawl('https://example.com', {
+      maxPages: 5,
+      maxDepth: 2,
+      scrapeOptions: { formats: ['markdown'], onlyMainContent: true },
+    });
+
+    expect(mockedAxios.post).toHaveBeenCalledWith(
+      'http://localhost:8001/v1/crawl',
+      {
+        url: 'https://example.com',
+        maxPages: 5,
+        maxDepth: 2,
+        scrapeOptions: { formats: ['markdown'], onlyMainContent: true },
+      },
+      expect.any(Object)
+    );
+  });
+
+  it('returns error on failure', async () => {
+    mockedAxios.post.mockRejectedValueOnce(new Error('Timeout'));
+
+    const result = await client.crawl('https://example.com');
+
+    expect(result.success).toBe(false);
+    expect(result.error).toBe('Timeout');
+  });
+});
+
+describe('ScrapeClient.crawlStatus', () => {
+  let client: ScrapeClient;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    client = new ScrapeClient('http://localhost:8001');
+  });
+
+  it('calls GET /v1/crawl/{id} and returns status', async () => {
+    mockedAxios.get.mockResolvedValueOnce({
+      data: {
+        success: true,
+        status: 'completed',
+        total: 3,
+        completed: 3,
+        data: [
+          {
+            markdown: '# Page 1',
+            metadata: {
+              title: 'Page 1',
+              description: null,
+              sourceURL: 'https://example.com',
+              language: 'en',
+              statusCode: 200,
+              renderedWith: 'http',
+              elapsedMs: 15,
+            },
+          },
+        ],
+      },
+    });
+
+    const result = await client.crawlStatus('crawl-job-123');
+
+    expect(mockedAxios.get).toHaveBeenCalledWith(
+      'http://localhost:8001/v1/crawl/crawl-job-123',
+      expect.any(Object)
+    );
+    expect(result.status).toBe('completed');
+    expect(result.total).toBe(3);
+    expect(result.data).toHaveLength(1);
+  });
+
+  it('handles scraping status correctly', async () => {
+    mockedAxios.get.mockResolvedValueOnce({
+      data: {
+        success: true,
+        status: 'scraping',
+        total: 10,
+        completed: 4,
+        data: [],
+      },
+    });
+
+    const result = await client.crawlStatus('active-job');
+
+    expect(result.status).toBe('scraping');
+    expect(result.completed).toBe(4);
+  });
+
+  it('handles raw string response from CRW (non-JSON)', async () => {
+    mockedAxios.get.mockResolvedValueOnce({
+      data: 'Invalid URL: Cannot parse `id` with value `bad-uuid`: UUID parsing failed',
+    });
+
+    const result = await client.crawlStatus('bad-uuid');
+
+    expect(result.success).toBe(false);
+    expect(result.status).toBe('failed');
+    expect(result.error).toBe('Invalid JSON response from CRW');
+  });
+
+  it('handles 400 status as failed crawl', async () => {
+    const axiosError = new Error('Request failed with status code 400') as any;
+    axiosError.response = { status: 400 };
+    mockedAxios.get.mockRejectedValueOnce(axiosError);
+
+    const result = await client.crawlStatus('nonexistent');
+
+    expect(result.status).toBe('failed');
+    expect(result.data).toEqual([]);
+  });
+});
