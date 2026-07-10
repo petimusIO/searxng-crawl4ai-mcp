@@ -13,6 +13,8 @@ import { RedisCache } from './redis-cache.js';
 import { normalizeUrl } from './url-normalizer.js';
 import { extractRelevantPassages } from './passage-extractor.js';
 import { stripMarkdownFromData, ContentMode } from './content-utils.js';
+import { FourgetClient } from './fourget-client.js';
+import { mergeSearchResults } from './search-merger.js';
 import express from 'express';
 import http from 'http';
 
@@ -50,6 +52,7 @@ const RESEARCH_CACHE_PREFIX        = 'research';
 export class SearXNGMCPServer {
   private server: Server;
   private searxng: SearXNGClient;
+  private fourget: FourgetClient;
   private cache: RedisCache;
   private _scrapeClient?: ScrapeClient;
   // network server state (optional)
@@ -72,6 +75,7 @@ export class SearXNGMCPServer {
 
     // Initialize clients
     this.searxng = new SearXNGClient(process.env.SEARXNG_URL || 'http://localhost:8081');
+    this.fourget = new FourgetClient(process.env.FOURGET_URL || 'http://localhost:8090');
     this.cache = new RedisCache(process.env.REDIS_URL);
 
     this.setupToolHandlers();
@@ -362,15 +366,16 @@ export class SearXNGMCPServer {
   // ── Tool handlers ───────────────────────────────────────────────────
 
   /**
-   * Web search via SearXNG with caching and optional retry.
+   * Web search via SearXNG + 4get with caching, parallel fetch, and merged deduplicated results.
    */
   private async handleSearchWeb(args: any) {
     const { query, maxResults, categories, engines, language } = args;
+    const scraper = args.scraper || 'brave';
 
-    logger.info(`Searching web with SearXNG: ${query}`);
+    logger.info(`Searching web (merged): ${query}`);
 
-    // Check cache
-    const cacheKey = `search:${query}:${categories || ''}:${engines || ''}:${language || 'en'}`;
+    // Check cache — include scraper in key
+    const cacheKey = `search:merged:${query}:${categories || ''}:${engines || ''}:${language || 'en'}:${scraper}`;
     const cached = await this.cache.get(cacheKey);
     if (cached) return cached;
 
@@ -379,50 +384,74 @@ export class SearXNGMCPServer {
 
     for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
       try {
-        const result = await this.searxng.search(query, {
-          engines,
-          categories,
-          language: language || 'en',
-          pageno: 1,
-          format: 'json',
+        // Call both sources in parallel
+        const [searxngSettled, fourgetSettled] = await Promise.allSettled([
+          this.searxng.search(query, {
+            engines,
+            categories,
+            language: language || 'en',
+            pageno: 1,
+            format: 'json',
+          }),
+          this.fourget.search(query, scraper),
+        ]);
+
+        const searxngResults = searxngSettled.status === 'fulfilled'
+          ? searxngSettled.value.results || []
+          : [];
+        const fourgetResults = fourgetSettled.status === 'fulfilled'
+          ? fourgetSettled.value.web || []
+          : [];
+
+        if (fourgetSettled.status === 'rejected') {
+          logger.warn(`4get search failed for "${query}":`, fourgetSettled.reason);
+        }
+
+        if (searxngResults.length === 0 && fourgetResults.length === 0) {
+          lastError = new Error('No results found from any source');
+          if (attempt < MAX_RETRIES) {
+            await new Promise((r) => setTimeout(r, 500));
+            continue;
+          }
+        }
+
+        // Merge + deduplicate
+        const merged = mergeSearchResults(searxngResults, fourgetResults, {
+          maxResults: limit,
         });
 
-        if (result.results && result.results.length > 0) {
-          const response = {
-            content: [
-              {
-                type: 'text',
-                text: JSON.stringify(
-                  {
-                    query: result.query,
-                    total_results: result.number_of_results,
-                    results: result.results.slice(0, limit).map((r) => ({
-                      title: r.title,
-                      url: r.url,
-                      content: r.content,
-                      publishedDate: r.publishedDate,
-                    })),
-                    suggestions: result.suggestions,
-                    engine_info: {
-                      unresponsive: result.unresponsive_engines,
+        const response = {
+          content: [
+            {
+              type: 'text' as const,
+              text: JSON.stringify(
+                {
+                  query,
+                  total_results: merged.length,
+                  results: merged.map((r) => ({
+                    title: r.title,
+                    url: r.url,
+                    content: r.content,
+                    publishedDate: r.publishedDate,
+                    source: r.source,
+                  })),
+                  suggestion: undefined,
+                  engine_info: {
+                    sources_consulted: {
+                      searxng: searxngSettled.status === 'fulfilled',
+                      fourget: fourgetSettled.status === 'fulfilled',
                     },
                   },
-                  null,
-                  2
-                ),
-              },
-            ],
-          };
+                },
+                null,
+                2
+              ),
+            },
+          ],
+        };
 
-          await this.cache.set(cacheKey, response);
-          return response;
-        }
-
-        // No results – retry
-        lastError = new Error('No results found');
-        if (attempt < MAX_RETRIES) {
-          await new Promise((r) => setTimeout(r, 500));
-        }
+        await this.cache.set(cacheKey, response, SEARCH_CACHE_TTL_MS);
+        return response;
       } catch (error) {
         lastError = error;
         if (attempt < MAX_RETRIES) {
@@ -431,7 +460,7 @@ export class SearXNGMCPServer {
       }
     }
 
-    logger.error('SearXNG search failed:', lastError);
+    logger.error('Merged search failed:', lastError);
     throw new Error(`Search failed: ${lastError instanceof Error ? lastError.message : 'Unknown error'}`);
   }
 
