@@ -35,13 +35,13 @@ describe('Firecrawl MCP Server', () => {
       'extract_structured_data',
       'get_crawl_status',
       'search_web',
-      'search_and_scrape',
+      'research',
       'crawl4ai_scrape'
     ];
 
     it('should register all required tools', () => {
       mockTools.forEach(tool => {
-        expect(tool).toMatch(/^(scrape_url|batch_scrape|crawl_website|map_website|extract_structured_data|get_crawl_status|search_web|search_and_scrape|crawl4ai_scrape)$/);
+        expect(tool).toMatch(/^(scrape_url|batch_scrape|crawl_website|map_website|extract_structured_data|get_crawl_status|search_web|research|crawl4ai_scrape)$/);
       });
     });
 

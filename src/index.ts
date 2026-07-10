@@ -246,8 +246,12 @@ export class SearXNGMCPServer {
             },
           },
           {
-            name: 'search_and_scrape',
-            description: 'Search the web and automatically scrape top results (combines SearXNG + CRW)',
+            name: 'research',
+            description:
+              'Search the web and perform research at configurable depth and breadth. '
+              + 'Depth: "quick" (search snippets only, fastest), "normal" (search + scrape top results with BM25 extraction, default), '
+              + '"deep" (search → map site → crawl pages → aggregate BM25, future). '
+              + 'Breadth: "single" (focus on best result, default), "multi" (all top results).',
             inputSchema: {
               type: 'object',
               properties: {
@@ -255,36 +259,39 @@ export class SearXNGMCPServer {
                   type: 'string',
                   description: 'The search query',
                 },
-                maxResults: {
-                  type: 'number',
-                  description: 'Maximum number of search results to scrape',
-                  default: 3,
-                },
-                mode: {
+                depth: {
                   type: 'string',
-                  enum: ['quick', 'deep'],
-                  description: 'Scraping mode: quick (fast, first pass) or deep (thorough, all results)',
-                  default: 'quick',
+                  enum: ['quick', 'normal', 'deep'],
+                  description: 'Research depth: "quick" (search snippets only), "normal" (search + scrape, default), "deep" (site crawling, future)',
+                  default: 'normal',
                 },
-                scrapeAll: {
-                  type: 'boolean',
-                  description: 'Scrape all results regardless of snippet length',
-                  default: false,
+                breadth: {
+                  type: 'string',
+                  enum: ['single', 'multi'],
+                  description: 'Source breadth: "single" (one best result, default), "multi" (all top results)',
+                  default: 'single',
+                },
+                max_results: {
+                  type: 'number',
+                  description: 'Maximum number of search results to process (default: 3 for single, 5 for multi)',
+                },
+                max_pages: {
+                  type: 'number',
+                  description: 'Maximum total pages to crawl (deep mode only, default: 10)',
                 },
                 categories: {
                   type: 'string',
-                  description: 'Search categories to filter by',
+                  description: 'Search categories to filter by (e.g. "news", "science")',
                 },
                 formats: {
                   type: 'array',
                   items: { type: 'string' },
-                  description: 'Formats for scraped content',
-                  default: ['markdown'],
+                  description: 'Output formats for scraped content (default: ["markdown"])',
                 },
                 content_mode: {
                   type: 'string',
                   enum: ['full', 'relevant_only', 'snippet'],
-                  description: 'Response mode: "full" returns everything, "relevant_only" strips full markdown, "snippet" returns only key passages with no context',
+                  description: 'Response content mode: "full" (everything), "relevant_only" (no full markdown), "snippet" (compact, no context)',
                   default: 'full',
                 },
               },
@@ -338,8 +345,8 @@ export class SearXNGMCPServer {
         switch (name) {
           case 'search_web':
             return await this.handleSearchWeb(args);
-          case 'search_and_scrape':
-            return await this.handleSearchAndScrape(args);
+          case 'research':
+            return await this.handleResearch(args);
           case 'scrape_url':
             return await this.handleScrapeUrl(args);
           default:
