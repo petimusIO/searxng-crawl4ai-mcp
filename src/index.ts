@@ -14,7 +14,7 @@ import { normalizeUrl } from './url-normalizer.js';
 import { extractRelevantPassages } from './passage-extractor.js';
 import { stripMarkdownFromData, ContentMode } from './content-utils.js';
 import { FourgetClient } from './fourget-client.js';
-import { mergeSearchResults } from './search-merger.js';
+import { mergeSearchResults, type UnifiedResult } from './search-merger.js';
 import express from 'express';
 import http from 'http';
 
@@ -746,16 +746,39 @@ export class SearXNGMCPServer {
     if (cached) return cached;
 
     try {
-      // 1. Search with retry
+      // 1. Search both sources in parallel with retry
+      const scraper = args.scraper || 'brave';
       let searchResults: Awaited<ReturnType<SearXNGClient['search']>> | null = null;
+      let mergedResults: UnifiedResult[] = [];
+
       for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
         try {
-          searchResults = await this.searxng.search(query, {
-            categories,
-            language: 'en',
-            format: 'json',
-          });
-          if (searchResults.results && searchResults.results.length > 0) break;
+          const [searxngSettled, fourgetSettled] = await Promise.allSettled([
+            this.searxng.search(query, {
+              categories,
+              language: 'en',
+              format: 'json',
+            }),
+            this.fourget.search(query, scraper),
+          ]);
+
+          if (searxngSettled.status === 'fulfilled') {
+            searchResults = searxngSettled.value;
+          }
+
+          const searxngResults = searxngSettled.status === 'fulfilled'
+            ? searxngSettled.value.results || []
+            : [];
+          const fourgetResults = fourgetSettled.status === 'fulfilled'
+            ? fourgetSettled.value.web || []
+            : [];
+
+          if (fourgetSettled.status === 'rejected') {
+            logger.warn(`4get research search failed for "${query}":`, fourgetSettled.reason);
+          }
+
+          mergedResults = mergeSearchResults(searxngResults, fourgetResults, { maxResults: 10 });
+          if (mergedResults.length > 0) break;
         } catch (e) {
           if (attempt < MAX_RETRIES) {
             await new Promise((r) => setTimeout(r, 500));
@@ -765,7 +788,7 @@ export class SearXNGMCPServer {
         }
       }
 
-      if (!searchResults || !searchResults.results || searchResults.results.length === 0) {
+      if (mergedResults.length === 0) {
         return {
           content: [{ type: 'text', text: JSON.stringify({
             query,
@@ -785,17 +808,17 @@ export class SearXNGMCPServer {
       // 2. Determine result count
       const defaultMaxResults = researchBreadth === 'single' ? RESEARCH_MAX_RESULTS_SINGLE : RESEARCH_MAX_RESULTS_MULTI;
       const resultLimit = Math.min(max_results || defaultMaxResults, 10);
-      const topResults = searchResults.results.slice(0, resultLimit);
+      const topResults = mergedResults.slice(0, resultLimit);
 
       // 3. Dispatch by depth
       if (researchDepth === 'quick') {
         return this.handleQuickResearch(query, researchBreadth, topResults, contentMode,
-          searchResults.number_of_results, searchResults.unresponsive_engines, startTime);
+          searchResults?.number_of_results ?? 0, searchResults?.unresponsive_engines ?? [], startTime);
       }
 
       // depth === 'normal' — scrape + BM25
       return this.handleNormalResearch(query, researchBreadth, topResults, contentMode, formats,
-        searchResults.number_of_results, searchResults.unresponsive_engines, startTime, cacheKey);
+        searchResults?.number_of_results ?? 0, searchResults?.unresponsive_engines ?? [], startTime, cacheKey);
     } catch (error) {
       logger.error('Research workflow failed:', error);
       throw new Error(`Research failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
