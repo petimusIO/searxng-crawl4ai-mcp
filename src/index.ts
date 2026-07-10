@@ -543,16 +543,39 @@ export class SearXNGMCPServer {
       const cached = await this.cache.get(cacheKey);
       if (cached) return cached;
 
-      // 2. Search with optional retry
+      // 2. Search both sources in parallel with retry
+      const scraper = args.scraper || 'brave';
       let searchResults: Awaited<ReturnType<SearXNGClient['search']>> | null = null;
+      let mergedResults: UnifiedResult[] = [];
+
       for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
         try {
-          searchResults = await this.searxng.search(query, {
-            categories,
-            language: 'en',
-            format: 'json',
-          });
-          if (searchResults.results && searchResults.results.length > 0) break;
+          const [searxngSettled, fourgetSettled] = await Promise.allSettled([
+            this.searxng.search(query, {
+              categories,
+              language: 'en',
+              format: 'json',
+            }),
+            this.fourget.search(query, scraper),
+          ]);
+
+          if (searxngSettled.status === 'fulfilled') {
+            searchResults = searxngSettled.value;
+          }
+
+          const searxngResults = searxngSettled.status === 'fulfilled'
+            ? searxngSettled.value.results || []
+            : [];
+          const fourgetResults = fourgetSettled.status === 'fulfilled'
+            ? fourgetSettled.value.web || []
+            : [];
+
+          if (fourgetSettled.status === 'rejected') {
+            logger.warn(`4get search_and_scrape search failed for "${query}":`, fourgetSettled.reason);
+          }
+
+          mergedResults = mergeSearchResults(searxngResults, fourgetResults, { maxResults: 10 });
+          if (mergedResults.length > 0) break;
         } catch (e) {
           if (attempt < MAX_RETRIES) {
             await new Promise((r) => setTimeout(r, 500));
@@ -562,7 +585,7 @@ export class SearXNGMCPServer {
         }
       }
 
-      if (!searchResults || !searchResults.results || searchResults.results.length === 0) {
+      if (mergedResults.length === 0) {
         return {
           content: [
             {
@@ -585,7 +608,7 @@ export class SearXNGMCPServer {
 
       // 3. Determine which URLs to scrape
       const limit = Math.min(maxResults || 3, isDeep ? 50 : 10);
-      const topResults = searchResults.results.slice(0, limit);
+      const topResults = mergedResults.slice(0, limit);
 
       type UrlEntry = { url: string; title: string; snippet: string };
       let urlsToScrape: UrlEntry[] = topResults.map((r) => ({
@@ -672,7 +695,7 @@ export class SearXNGMCPServer {
               {
                 query,
                 mode: isDeep ? 'deep' : 'quick',
-                search_results: searchResults.number_of_results,
+                search_results: searchResults?.number_of_results ?? 0,
                 scraped_count: scrapedResults.filter((r) => r.success).length,
                 elapsed_ms: Date.now() - startTime,
                 results: scrapedResults.map((r) => {
