@@ -39,6 +39,13 @@ const RELEVANCE_TOP_N           = Number(process.env.MCP_RELEVANCE_TOP_N)       
 const RELEVANCE_CONTEXT_WINDOW  = Number(process.env.MCP_RELEVANCE_CONTEXT_WINDOW)   || 1;
 const RELEVANCE_MIN_SCORE       = Number(process.env.MCP_RELEVANCE_MIN_SCORE)        || 0.0;
 
+// Research tool defaults
+const RESEARCH_MAX_RESULTS_SINGLE  = 3;
+const RESEARCH_MAX_RESULTS_MULTI   = 5;
+const RESEARCH_SCRAPE_TIMEOUT_MS   = 10000;
+const RESEARCH_NORMAL_POOL_SIZE    = 15;
+const RESEARCH_CACHE_PREFIX        = 'research';
+
 // ── Server class ──────────────────────────────────────────────────────
 export class SearXNGMCPServer {
   private server: Server;
@@ -664,6 +671,263 @@ export class SearXNGMCPServer {
       logger.error('Search and scrape workflow failed:', error);
       throw new Error(`Search and scrape failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
+  }
+
+  /**
+   * Research tool: search the web with configurable depth and breadth.
+   *
+   * Depth:  "quick" (search snippets only), "normal" (search + scrape + BM25, default),
+   *         "deep" (search → map → crawl → aggregate BM25, future)
+   * Breadth: "single" (best result, default), "multi" (all top results)
+   */
+  private async handleResearch(args: any) {
+    const { query, depth, breadth, max_results, categories, formats, content_mode } = args;
+    const contentMode = (content_mode || 'full') as ContentMode;
+    const researchDepth = depth || 'normal';
+    const researchBreadth = breadth || 'single';
+
+    // Validate depth — deep is not yet implemented
+    if (researchDepth === 'deep') {
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify({
+            query,
+            error: 'Deep research mode (site crawling) is not yet implemented. Use depth: "quick" or depth: "normal".',
+            research_metadata: { depth: 'deep', breadth: researchBreadth, pages_scraped: 0, errors: [] },
+            results: [],
+          }, null, 2),
+        }],
+      };
+    }
+
+    const startTime = Date.now();
+    const formatKey = (formats || ['markdown']).join(',');
+
+    // Composite cache key
+    const cacheKey = `${RESEARCH_CACHE_PREFIX}:${query}:${researchDepth}:${researchBreadth}:${max_results || ''}:${categories || ''}:${formatKey}:${contentMode}`;
+    const cached = await this.cache.get(cacheKey);
+    if (cached) return cached;
+
+    try {
+      // 1. Search with retry
+      let searchResults: Awaited<ReturnType<SearXNGClient['search']>> | null = null;
+      for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+        try {
+          searchResults = await this.searxng.search(query, {
+            categories,
+            language: 'en',
+            format: 'json',
+          });
+          if (searchResults.results && searchResults.results.length > 0) break;
+        } catch (e) {
+          if (attempt < MAX_RETRIES) {
+            await new Promise((r) => setTimeout(r, 500));
+          } else {
+            throw e;
+          }
+        }
+      }
+
+      if (!searchResults || !searchResults.results || searchResults.results.length === 0) {
+        return {
+          content: [{ type: 'text', text: JSON.stringify({
+            query,
+            number_of_results: 0,
+            unresponsive_engines: [],
+            research_metadata: {
+              depth: researchDepth,
+              breadth: researchBreadth,
+              pages_scraped: 0,
+              errors: [],
+            },
+            results: [],
+          }, null, 2) }],
+        };
+      }
+
+      // 2. Determine result count
+      const defaultMaxResults = researchBreadth === 'single' ? RESEARCH_MAX_RESULTS_SINGLE : RESEARCH_MAX_RESULTS_MULTI;
+      const resultLimit = Math.min(max_results || defaultMaxResults, 10);
+      const topResults = searchResults.results.slice(0, resultLimit);
+
+      // 3. Dispatch by depth
+      if (researchDepth === 'quick') {
+        return this.handleQuickResearch(query, researchBreadth, topResults, contentMode,
+          searchResults.number_of_results, searchResults.unresponsive_engines, startTime);
+      }
+
+      // depth === 'normal' — scrape + BM25
+      return this.handleNormalResearch(query, researchBreadth, topResults, contentMode, formats,
+        searchResults.number_of_results, searchResults.unresponsive_engines, startTime, cacheKey);
+    } catch (error) {
+      logger.error('Research workflow failed:', error);
+      throw new Error(`Research failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
+  /**
+   * Quick research: search snippets only, no scraping.
+   */
+  private handleQuickResearch(
+    query: string,
+    breadth: string,
+    topResults: Array<{ url: string; title: string; content: string }>,
+    contentMode: ContentMode,
+    numberOfResults: number,
+    unresponsiveEngines: string[],
+    startTime: number,
+  ) {
+    const resultCount = breadth === 'single' ? 1 : Math.min(topResults.length, 5);
+    const results = topResults.slice(0, resultCount).map((r, i) => ({
+      url: r.url,
+      title: r.title,
+      snippet: r.content,
+      source_type: 'snippet' as const,
+      success: true,
+      relevance_rank: i + 1,
+    }));
+
+    return {
+      content: [{ type: 'text', text: JSON.stringify({
+        query,
+        number_of_results: numberOfResults,
+        unresponsive_engines: unresponsiveEngines,
+        research_metadata: {
+          depth: 'quick' as const,
+          breadth: breadth,
+          pages_scraped: 0,
+          errors: [],
+        },
+        results,
+        elapsed_ms: Date.now() - startTime,
+      }, null, 2) }],
+    };
+  }
+
+  /**
+   * Normal research: search → scrape top URLs → BM25 per page.
+   * This replaces the old search_and_scrape workflow.
+   */
+  private async handleNormalResearch(
+    query: string,
+    breadth: string,
+    topResults: Array<{ url: string; title: string; content: string; score?: number }>,
+    contentMode: ContentMode,
+    formats: string[] | undefined,
+    numberOfResults: number,
+    unresponsiveEngines: string[],
+    startTime: number,
+    cacheKey: string,
+  ) {
+    // Determine how many URLs to scrape
+    const urlsToScrapeCount = breadth === 'multi'
+      ? Math.min(topResults.length, 5)
+      : Math.min(topResults.length, 3);
+
+    const urlsToScrape = topResults.slice(0, urlsToScrapeCount).map((r) => ({
+      url: r.url,
+      title: r.title,
+      snippet: r.content,
+    }));
+
+    logger.info(`Research (normal): scraping ${urlsToScrape.length} URLs`);
+
+    const poolSize = RESEARCH_NORMAL_POOL_SIZE;
+    const scrapedResults: Array<{
+      url: string;
+      title: string;
+      snippet: string;
+      source_type: 'scraped' | 'snippet';
+      success: boolean;
+      data?: any;
+      relevant_passages?: any;
+      error?: string;
+    }> = [];
+
+    const errors: Array<{ url: string; error: string }> = [];
+
+    for (let i = 0; i < urlsToScrape.length; i += poolSize) {
+      const batch = urlsToScrape.slice(i, i + poolSize);
+      const batchResults = await Promise.allSettled(
+        batch.map((entry) => this.scrapeSingleUrl(entry.url, RESEARCH_SCRAPE_TIMEOUT_MS, false, formats))
+      );
+
+      for (let j = 0; j < batchResults.length; j++) {
+        const settled = batchResults[j];
+        const entry = batch[j];
+
+        if (settled.status === 'fulfilled') {
+          const scrapeData = settled.value.data;
+
+          // Content-fit filter: skip results with too few words
+          const wordCount = scrapeData?.metadata?.word_count || 0;
+          if (wordCount < FIT_MIN_WORDS) {
+            continue;
+          }
+
+          // BM25 extraction
+          let relevantPassages: any = undefined;
+          if (scrapeData?.markdown) {
+            const ctxWindow = contentMode === 'snippet' ? 0 : RELEVANCE_CONTEXT_WINDOW;
+            relevantPassages = extractRelevantPassages(
+              scrapeData.markdown,
+              query,
+              {
+                topN: RELEVANCE_TOP_N,
+                contextWindow: ctxWindow,
+                minScore: RELEVANCE_MIN_SCORE,
+              }
+            );
+          }
+
+          // Apply content mode stripping
+          const resultData = contentMode !== 'full'
+            ? stripMarkdownFromData(scrapeData, contentMode)
+            : scrapeData;
+
+          scrapedResults.push({
+            url: entry.url,
+            title: entry.title,
+            snippet: entry.snippet,
+            source_type: 'scraped',
+            success: settled.value.success,
+            data: resultData,
+            relevant_passages: relevantPassages,
+          });
+        } else {
+          const errMsg = settled.reason?.message || 'Scrape failed';
+          errors.push({ url: entry.url, error: errMsg });
+          scrapedResults.push({
+            url: entry.url,
+            title: entry.title,
+            snippet: entry.snippet,
+            source_type: 'snippet',
+            success: false,
+            error: errMsg,
+          });
+        }
+      }
+    }
+
+    const response = {
+      content: [{ type: 'text', text: JSON.stringify({
+        query,
+        number_of_results: numberOfResults,
+        unresponsive_engines: unresponsiveEngines,
+        research_metadata: {
+          depth: 'normal' as const,
+          breadth,
+          pages_scraped: scrapedResults.filter((r) => r.success).length,
+          errors,
+        },
+        results: scrapedResults,
+        elapsed_ms: Date.now() - startTime,
+      }, null, 2) }],
+    };
+
+    await this.cache.set(cacheKey, response, COMPOSITE_CACHE_TTL_MS);
+    return response;
   }
 
   /**
