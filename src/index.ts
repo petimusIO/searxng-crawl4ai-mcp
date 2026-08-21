@@ -116,8 +116,10 @@ export class SearXNGMCPServer {
           const endpoint = process.env.MCP_SSE_PATH || '/mcp/sse';
           const transport = new SSEServerTransport(endpoint, res as any);
 
-          // start() will initialize the SSE response
-          await transport.start();
+          // NOTE: do NOT call transport.start() here — Server.connect()
+          // calls start() automatically. Explicit start() + connect()
+          // throws "SSEServerTransport already started!" and kills the
+          // SSE handshake (observed on every GET /sse before this fix).
 
           // register the transport for incoming POST messages
           this.sseSessions.set(String(transport.sessionId), transport);
@@ -141,7 +143,8 @@ export class SearXNGMCPServer {
         if (!transport) return res.status(404).json({ ok: false, error: 'session not found' });
 
         try {
-          await transport.handlePostMessage(req as any, res as any);
+          await transport.handleMessage(req.body);
+          res.status(202).end('Accepted');
         } catch (err) {
           logger.error('mcp:http:sse:post:error', { message: String(err) });
           res.status(500).json({ ok: false, error: 'post error' });
