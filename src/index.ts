@@ -44,7 +44,7 @@ const RELEVANCE_MIN_SCORE       = Number(process.env.MCP_RELEVANCE_MIN_SCORE)   
 // Research tool defaults
 const RESEARCH_MAX_RESULTS_SINGLE  = 3;
 const RESEARCH_MAX_RESULTS_MULTI   = 5;
-const RESEARCH_SCRAPE_TIMEOUT_MS   = 10000;
+const RESEARCH_SCRAPE_TIMEOUT_MS   = Number(process.env.MCP_RESEARCH_SCRAPE_TIMEOUT_MS) || 10000;
 const RESEARCH_NORMAL_POOL_SIZE    = 15;
 const RESEARCH_CACHE_PREFIX        = 'research';
 
@@ -921,11 +921,29 @@ export class SearXNGMCPServer {
       ? Math.min(topResults.length, 5)
       : Math.min(topResults.length, 3);
 
-    const urlsToScrape = topResults.slice(0, urlsToScrapeCount).map((r) => ({
-      url: r.url,
-      title: r.title,
-      snippet: r.content,
-    }));
+    // Skip scraping URLs whose snippet is already rich (>= 200 chars) —
+    // the search engine already summarized them. Restores the v2 rule that
+    // was lost in the v3 rewrite; most common queries then never scrape.
+    const urlsToScrape = topResults.slice(0, urlsToScrapeCount)
+      .filter((r) => !(r.content && r.content.length >= 200))
+      .map((r) => ({
+        url: r.url,
+        title: r.title,
+        snippet: r.content,
+      }));
+
+    // Rich-snippet pages skipped above still ship as snippet results so the
+    // caller keeps full coverage of the result set.
+    const snippetOnlyResults = topResults.slice(0, urlsToScrapeCount)
+      .filter((r) => r.content && r.content.length >= 200)
+      .map((r) => ({
+        url: r.url,
+        title: r.title,
+        snippet: r.content,
+        source_type: 'snippet' as const,
+        success: true,
+        relevance_rank: 0,
+      }));
 
     logger.info(`Research (normal): scraping ${urlsToScrape.length} URLs`);
 
@@ -1017,7 +1035,7 @@ export class SearXNGMCPServer {
           pages_scraped: scrapedResults.filter((r) => r.success).length,
           errors,
         },
-        results: scrapedResults,
+        results: [...snippetOnlyResults, ...scrapedResults],
         elapsed_ms: Date.now() - startTime,
       }, null, 2) }],
     };
