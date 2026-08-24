@@ -69,7 +69,7 @@ engines:
     engine: google
     shortcut: go
     timeout: 5.0
-    disabled: false
+    disabled: true
     use_mobile_ui: false
 
   - name: bing
