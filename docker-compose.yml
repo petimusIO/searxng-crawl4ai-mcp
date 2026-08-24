@@ -89,8 +89,6 @@ services:
   fourget:
     image: luuul/4get:latest
     container_name: fourget
-    ports:
-      - "8090:80"
     environment:
       - FOURGET_PROTO=http
       - FOURGET_SERVER_NAME=4get.local

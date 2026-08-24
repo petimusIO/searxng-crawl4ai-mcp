@@ -94,20 +94,20 @@ engines:
     engine: startpage
     shortcut: sp
     timeout: 6.0
-    disabled: false
+    disabled: true
 
   - name: qwant
     engine: qwant
     shortcut: qw
     categories: general
     timeout: 5.0
-    disabled: false
+    disabled: true
 
   - name: karmasearch
     engine: karmasearch
     shortcut: km
     timeout: 5.0
-    disabled: false
+    disabled: true
 
   # --- Reference (tier 2 — authoritative sources) ---
   - name: wikipedia

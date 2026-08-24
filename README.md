@@ -126,7 +126,17 @@ Create `.claude/settings.json`:
 ```
 **Returns:** 30+ search results in <1 second from multiple engines
 
-### 2. `scrape_url` - URL Scraping
+### 2. `research` - Intelligent Research (search + scrape)
+```json
+{
+  "query": "Bitcoin technical analysis September 2025",
+  "depth": "normal",
+  "breadth": "single"
+}
+```
+**Returns:** Search results + scraped content from top URLs (complete market intelligence). Configurable depth: `quick` (snippets only), `normal` (search + scrape + BM25 extraction, default), `deep` (site crawling, future). Breadth: `single` (focus best result) or `multi` (all top results).
+
+### 3. `scrape_url` - URL Scraping
 ```json
 {
   "url": "https://finance.yahoo.com/quote/BTC-USD/",
@@ -134,15 +144,6 @@ Create `.claude/settings.json`:
 }
 ```
 **Returns:** Full page content with metadata (title, word count, clean markdown)
-
-### 3. `search_and_scrape` - Combined Power Workflow
-```json
-{
-  "query": "Bitcoin technical analysis September 2025",
-  "maxResults": 2
-}
-```
-**Returns:** Search results + scraped content from top URLs (complete market intelligence)
 
 ## 📊 **Performance Benchmarks**
 
