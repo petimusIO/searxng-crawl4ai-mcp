@@ -66,6 +66,19 @@ describe('FourgetClient', () => {
       );
     });
 
+    it('uses the caller-provided request timeout', async () => {
+      mockedAxios.get.mockResolvedValueOnce({
+        data: { status: 'ok', web: [], npt: '' },
+      });
+
+      await client.search('query', 'ddg', 1500);
+
+      expect(mockedAxios.get).toHaveBeenCalledWith(
+        'http://fourget:80/api/v1/web',
+        expect.objectContaining({ timeout: 1500 })
+      );
+    });
+
     it('flattens compound description arrays into plain text', async () => {
       mockedAxios.get.mockResolvedValueOnce({
         data: {

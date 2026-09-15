@@ -69,7 +69,11 @@ export class FourgetClient {
     this.baseUrl = baseUrl.replace(/\/$/, '');
   }
 
-  async search(query: string, scraper: string = DEFAULT_FOURGET_SCRAPER): Promise<FourgetSearchResponse> {
+  async search(
+    query: string,
+    scraper: string = DEFAULT_FOURGET_SCRAPER,
+    timeoutMs: number = 8000,
+  ): Promise<FourgetSearchResponse> {
     try {
       logger.info(`Searching 4get: ${query} (scraper=${scraper})`);
 
@@ -81,7 +85,7 @@ export class FourgetClient {
             'Accept': 'application/json',
             'User-Agent': 'SearXNG-CRW-MCP/3.0',
           },
-          timeout: 8000,
+          timeout: timeoutMs,
         }
       );
 
