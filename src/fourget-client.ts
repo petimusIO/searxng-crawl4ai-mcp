@@ -1,6 +1,8 @@
 import axios from 'axios';
 import { logger } from './logger.js';
 
+export const DEFAULT_FOURGET_SCRAPER = 'ddg';
+
 /** Raw 4get web result before processing */
 interface FourgetRawDescriptionItem {
   type: string;
@@ -67,7 +69,7 @@ export class FourgetClient {
     this.baseUrl = baseUrl.replace(/\/$/, '');
   }
 
-  async search(query: string, scraper: string = 'brave'): Promise<FourgetSearchResponse> {
+  async search(query: string, scraper: string = DEFAULT_FOURGET_SCRAPER): Promise<FourgetSearchResponse> {
     try {
       logger.info(`Searching 4get: ${query} (scraper=${scraper})`);
 
@@ -110,7 +112,7 @@ export class FourgetClient {
   async healthCheck(): Promise<boolean> {
     try {
       await axios.get(`${this.baseUrl}/api/v1/web`, {
-        params: { s: 'healthcheck', scraper: 'brave' },
+        params: { s: 'healthcheck', scraper: DEFAULT_FOURGET_SCRAPER },
         timeout: 5000,
       });
       return true;

@@ -13,7 +13,7 @@ import { RedisCache } from './redis-cache.js';
 import { normalizeUrl } from './url-normalizer.js';
 import { extractRelevantPassages } from './passage-extractor.js';
 import { stripMarkdownFromData, ContentMode } from './content-utils.js';
-import { FourgetClient } from './fourget-client.js';
+import { DEFAULT_FOURGET_SCRAPER, FourgetClient } from './fourget-client.js';
 import { mergeSearchResults, type UnifiedResult } from './search-merger.js';
 import express from 'express';
 import http from 'http';
@@ -246,8 +246,8 @@ export class SearXNGMCPServer {
                 },
                 scraper: {
                   type: 'string',
-                  description: '4get scraper engine (e.g., "brave", "google", "bing"). Default: "brave"',
-                  default: 'brave',
+                  description: '4get scraper engine (e.g., "ddg", "google_cse", "startpage", "brave"). Default: "ddg"',
+                  default: DEFAULT_FOURGET_SCRAPER,
                 },
                 language: {
                   type: 'string',
@@ -309,8 +309,8 @@ export class SearXNGMCPServer {
                 },
                 scraper: {
                   type: 'string',
-                  description: '4get scraper engine (e.g., "brave", "google", "bing"). Default: "brave"',
-                  default: 'brave',
+                  description: '4get scraper engine (e.g., "ddg", "google_cse", "startpage", "brave"). Default: "ddg"',
+                  default: DEFAULT_FOURGET_SCRAPER,
                 },
               },
               required: ['query'],
@@ -384,7 +384,7 @@ export class SearXNGMCPServer {
    */
   private async handleSearchWeb(args: any) {
     const { query, maxResults, categories, engines, language } = args;
-    const scraper = args.scraper || 'brave';
+    const scraper = args.scraper || DEFAULT_FOURGET_SCRAPER;
 
     logger.info(`Searching web (merged): ${query}`);
 
@@ -558,7 +558,7 @@ export class SearXNGMCPServer {
       if (cached) return cached;
 
       // 2. Search both sources in parallel with retry
-      const scraper = args.scraper || 'brave';
+      const scraper = args.scraper || DEFAULT_FOURGET_SCRAPER;
       let searchResults: Awaited<ReturnType<SearXNGClient['search']>> | null = null;
       let mergedResults: UnifiedResult[] = [];
 
@@ -784,7 +784,7 @@ export class SearXNGMCPServer {
 
     try {
       // 1. Search both sources in parallel with retry
-      const scraper = args.scraper || 'brave';
+      const scraper = args.scraper || DEFAULT_FOURGET_SCRAPER;
       let searchResults: Awaited<ReturnType<SearXNGClient['search']>> | null = null;
       let mergedResults: UnifiedResult[] = [];
 

@@ -51,7 +51,7 @@ describe('FourgetClient', () => {
       expect(result.web[0].description).toBe('A test description');
     });
 
-    it('uses default scraper "brave" when none provided', async () => {
+    it('uses default scraper "ddg" when none provided', async () => {
       mockedAxios.get.mockResolvedValueOnce({
         data: { status: 'ok', web: [], npt: '' },
       });
@@ -61,7 +61,7 @@ describe('FourgetClient', () => {
       expect(mockedAxios.get).toHaveBeenCalledWith(
         'http://fourget:80/api/v1/web',
         expect.objectContaining({
-          params: { s: 'query', scraper: 'brave' },
+          params: { s: 'query', scraper: 'ddg' },
         })
       );
     });
@@ -150,7 +150,10 @@ describe('FourgetClient', () => {
       expect(healthy).toBe(true);
       expect(mockedAxios.get).toHaveBeenCalledWith(
         'http://fourget:80/api/v1/web',
-        expect.objectContaining({ timeout: 5000 })
+        expect.objectContaining({
+          params: { s: 'healthcheck', scraper: 'ddg' },
+          timeout: 5000,
+        })
       );
     });
 
