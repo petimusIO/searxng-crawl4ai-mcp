@@ -45,7 +45,7 @@ const RELEVANCE_MIN_SCORE       = Number(process.env.MCP_RELEVANCE_MIN_SCORE)   
 // Research tool defaults
 const RESEARCH_MAX_RESULTS_SINGLE  = 3;
 const RESEARCH_MAX_RESULTS_MULTI   = 5;
-const RESEARCH_SCRAPE_TIMEOUT_MS   = Number(process.env.MCP_RESEARCH_SCRAPE_TIMEOUT_MS) || 10000;
+const RESEARCH_SCRAPE_TIMEOUT_MS   = Number(process.env.MCP_RESEARCH_SCRAPE_TIMEOUT_MS) || 3000;
 const RESEARCH_NORMAL_POOL_SIZE    = 15;
 const RESEARCH_CACHE_PREFIX        = 'research:v2';
 const FOURGET_PRIMARY_TIMEOUT_MS   = Number(process.env.MCP_FOURGET_PRIMARY_TIMEOUT_MS) || 1500;
@@ -204,7 +204,7 @@ export class SearXNGMCPServer {
     timeout: number = 30000
   ): Promise<ScrapeClientResponse> {
     const normalized = normalizeUrl(url);
-    const cacheKey = `scrape_url:${normalized}:${(formats || ['markdown']).join(',')}`;
+    const cacheKey = `scrape_url:${normalized}:${(formats || ['markdown']).join(',')}:${timeout}`;
     const cached = await this.cache.get<ScrapeClientResponse>(cacheKey);
     if (cached) return cached;
 

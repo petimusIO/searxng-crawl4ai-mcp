@@ -6,6 +6,46 @@ vi.mock('axios');
 
 const mockedAxios = vi.mocked(axios);
 
+describe('ScrapeClient.scrape', () => {
+  let client: ScrapeClient;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    client = new ScrapeClient('http://localhost:8001');
+    mockedAxios.post.mockResolvedValue({
+      data: { success: true, data: { markdown: '# Page', metadata: {} } },
+    });
+  });
+
+  it('sends deadlineMs equal to the requested timeout and Axios timeout 1000ms above it', async () => {
+    await client.scrape('https://example.com', { timeout: 15000 });
+
+    expect(mockedAxios.post).toHaveBeenCalledWith(
+      'http://localhost:8001/v1/scrape',
+      {
+        url: 'https://example.com',
+        formats: ['markdown'],
+        deadlineMs: 15000,
+      },
+      expect.objectContaining({ timeout: 16000 })
+    );
+  });
+
+  it('defaults deadlineMs to 30000 and Axios timeout to 31000', async () => {
+    await client.scrape('https://example.com');
+
+    expect(mockedAxios.post).toHaveBeenCalledWith(
+      'http://localhost:8001/v1/scrape',
+      expect.objectContaining({
+        url: 'https://example.com',
+        formats: ['markdown'],
+        deadlineMs: 30000,
+      }),
+      expect.objectContaining({ timeout: 31000 })
+    );
+  });
+});
+
 describe('ScrapeClient.map', () => {
   let client: ScrapeClient;
 

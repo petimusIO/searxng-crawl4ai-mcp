@@ -90,17 +90,19 @@ export class ScrapeClient {
     try {
       logger.info(`Scraping with CRW: ${url}`);
 
+      const deadlineMs = options.timeout || 30000;
       const response: AxiosResponse<any> = await axios.post(
         `${this.baseUrl}/v1/scrape`,
         {
           url,
           formats: options.formats || ['markdown'],
+          deadlineMs,
         },
         {
           headers: {
             'Content-Type': 'application/json',
           },
-          timeout: (options.timeout || 30000) + 5000,
+          timeout: deadlineMs + 1000,
         }
       );
 
