@@ -1,3 +1,5 @@
+import { resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import {
@@ -47,7 +49,7 @@ const RESEARCH_MAX_RESULTS_SINGLE  = 3;
 const RESEARCH_MAX_RESULTS_MULTI   = 5;
 const RESEARCH_SCRAPE_TIMEOUT_MS   = Number(process.env.MCP_RESEARCH_SCRAPE_TIMEOUT_MS) || 3000;
 const RESEARCH_NORMAL_POOL_SIZE    = 15;
-const RESEARCH_CACHE_PREFIX        = 'research:v2';
+const RESEARCH_CACHE_PREFIX        = 'research:v3';
 const FOURGET_PRIMARY_TIMEOUT_MS   = Number(process.env.MCP_FOURGET_PRIMARY_TIMEOUT_MS) || 1500;
 const FOURGET_MIN_RESULTS          = Number(process.env.MCP_FOURGET_MIN_RESULTS) || 5;
 
@@ -204,7 +206,7 @@ export class SearXNGMCPServer {
     timeout: number = 30000
   ): Promise<ScrapeClientResponse> {
     const normalized = normalizeUrl(url);
-    const cacheKey = `scrape_url:${normalized}:${(formats || ['markdown']).join(',')}:${timeout}`;
+    const cacheKey = `scrape_url:v2:${normalized}:${(formats || ['markdown']).join(',')}:${timeout}`;
     const cached = await this.cache.get<ScrapeClientResponse>(cacheKey);
     if (cached) return cached;
 
@@ -215,7 +217,11 @@ export class SearXNGMCPServer {
       proxy_url: process.env.PROXY_URL,
     });
 
-    await this.cache.set(cacheKey, result, URL_SCRAPE_CACHE_TTL_MS);
+    const wordCount = result.data?.metadata?.word_count || 0;
+    const markdown = typeof result.data?.markdown === 'string' ? result.data.markdown.trim() : '';
+    if (result.success && (wordCount > 0 || markdown.length > 0)) {
+      await this.cache.set(cacheKey, result, URL_SCRAPE_CACHE_TTL_MS);
+    }
     return result;
   }
 
@@ -265,7 +271,7 @@ export class SearXNGMCPServer {
             name: 'research',
             description:
               'Search the web and perform research at configurable depth and breadth. '
-              + 'Depth: "quick" (search snippets only, fastest), "normal" (search + scrape top results with BM25 extraction, default), '
+              + 'Depth: "quick" (search snippets only, fastest), "normal" (search + scrape each selected source regardless of snippet length, default), '
               + '"deep" (search → map site → crawl pages → aggregate BM25, future). '
               + 'Breadth: "single" (focus on best result, default), "multi" (all top results).',
             inputSchema: {
@@ -278,7 +284,7 @@ export class SearXNGMCPServer {
                 depth: {
                   type: 'string',
                   enum: ['quick', 'normal', 'deep'],
-                  description: 'Research depth: "quick" (search snippets only), "normal" (search + scrape, default), "deep" (site crawling, future)',
+                  description: 'Research depth: "quick" (search snippets only), "normal" (search + scrape each selected source, default), "deep" (site crawling, future)',
                   default: 'normal',
                 },
                 breadth: {
@@ -394,7 +400,7 @@ export class SearXNGMCPServer {
     const limit = Math.min(maxResults || DEFAULT_LIMIT, 50);
 
     // Check cache — include scraper and result limit in key
-    const cacheKey = buildCacheKey('search:primary-fallback', [
+    const cacheKey = buildCacheKey('search:primary-fallback:v2', [
       query,
       categories || '',
       engines || '',
@@ -534,7 +540,7 @@ export class SearXNGMCPServer {
     try {
       // 1. Check cache for search results
       const formatKey = (formats || ['markdown']).join(',');
-      const cacheKey = buildCacheKey('search_and_scrape:v2', [
+      const cacheKey = buildCacheKey('search_and_scrape:v3', [
         query,
         maxResults || '',
         mode || '',
@@ -877,34 +883,33 @@ export class SearXNGMCPServer {
       ? Math.min(topResults.length, 5)
       : Math.min(topResults.length, 3);
 
-    // Skip scraping URLs whose snippet is already rich (>= 200 chars) —
-    // the search engine already summarized them. Restores the v2 rule that
-    // was lost in the v3 rewrite; most common queries then never scrape.
-    const urlsToScrape = topResults.slice(0, urlsToScrapeCount)
-      .filter((r) => !(r.content && r.content.length >= 200))
-      .map((r) => ({
-        url: r.url,
-        title: r.title,
-        snippet: r.content,
-      }));
+    type SelectedSource = {
+      url: string;
+      title: string;
+      snippet: string;
+    };
 
-    // Rich-snippet pages skipped above still ship as snippet results so the
-    // caller keeps full coverage of the result set.
-    const snippetOnlyResults = topResults.slice(0, urlsToScrapeCount)
-      .filter((r) => r.content && r.content.length >= 200)
-      .map((r) => ({
-        url: r.url,
-        title: r.title,
-        snippet: r.content,
-        source_type: 'snippet' as const,
-        success: true,
-        relevance_rank: 0,
-      }));
+    const selected: SelectedSource[] = topResults.slice(0, urlsToScrapeCount).map((r) => ({
+      url: r.url,
+      title: r.title,
+      snippet: r.content,
+    }));
+    const urlsToScrape = selected;
 
     logger.info(`Research (normal): scraping ${urlsToScrape.length} URLs`);
 
     const poolSize = RESEARCH_NORMAL_POOL_SIZE;
-    const scrapedResults: Array<{
+    const settledByIndex: PromiseSettledResult<ScrapeClientResponse>[] = [];
+
+    for (let i = 0; i < urlsToScrape.length; i += poolSize) {
+      const batch = urlsToScrape.slice(i, i + poolSize);
+      const batchResults = await Promise.allSettled(
+        batch.map((entry) => this.scrapeSingleUrl(entry.url, RESEARCH_SCRAPE_TIMEOUT_MS, false, formats))
+      );
+      settledByIndex.push(...batchResults);
+    }
+
+    type ResearchResult = {
       url: string;
       title: string;
       snippet: string;
@@ -913,71 +918,77 @@ export class SearXNGMCPServer {
       data?: any;
       relevant_passages?: any;
       error?: string;
-    }> = [];
+      relevance_rank?: number;
+    };
 
+    const results: ResearchResult[] = [];
     const errors: Array<{ url: string; error: string }> = [];
 
-    for (let i = 0; i < urlsToScrape.length; i += poolSize) {
-      const batch = urlsToScrape.slice(i, i + poolSize);
-      const batchResults = await Promise.allSettled(
-        batch.map((entry) => this.scrapeSingleUrl(entry.url, RESEARCH_SCRAPE_TIMEOUT_MS, false, formats))
-      );
+    const pushFailure = (entry: SelectedSource, errMsg: string) => {
+      errors.push({ url: entry.url, error: errMsg });
+      results.push({
+        url: entry.url,
+        title: entry.title,
+        snippet: entry.snippet,
+        source_type: 'snippet',
+        success: false,
+        error: errMsg,
+      });
+    };
 
-      for (let j = 0; j < batchResults.length; j++) {
-        const settled = batchResults[j];
-        const entry = batch[j];
-
-        if (settled.status === 'fulfilled') {
-          const scrapeData = settled.value.data;
-
-          // Content-fit filter: skip results with too few words
-          const wordCount = scrapeData?.metadata?.word_count || 0;
-          if (wordCount < FIT_MIN_WORDS) {
-            continue;
-          }
-
-          // BM25 extraction
-          let relevantPassages: any = undefined;
-          if (scrapeData?.markdown) {
-            const ctxWindow = contentMode === 'snippet' ? 0 : RELEVANCE_CONTEXT_WINDOW;
-            relevantPassages = extractRelevantPassages(
-              scrapeData.markdown,
-              query,
-              {
-                topN: RELEVANCE_TOP_N,
-                contextWindow: ctxWindow,
-                minScore: RELEVANCE_MIN_SCORE,
-              }
-            );
-          }
-
-          // Apply content mode stripping
-          const resultData = contentMode !== 'full'
-            ? stripMarkdownFromData(scrapeData, contentMode)
-            : scrapeData;
-
-          scrapedResults.push({
-            url: entry.url,
-            title: entry.title,
-            snippet: entry.snippet,
-            source_type: 'scraped',
-            success: settled.value.success,
-            data: resultData,
-            relevant_passages: relevantPassages,
-          });
-        } else {
-          const errMsg = settled.reason?.message || 'Scrape failed';
-          errors.push({ url: entry.url, error: errMsg });
-          scrapedResults.push({
-            url: entry.url,
-            title: entry.title,
-            snippet: entry.snippet,
-            source_type: 'snippet',
-            success: false,
-            error: errMsg,
-          });
-        }
+    for (let index = 0; index < selected.length; index++) {
+      const entry = selected[index];
+      const settled = settledByIndex[index];
+      if (!settled) {
+        pushFailure(entry, 'Scrape failed');
+        continue;
       }
+
+      if (settled.status === 'rejected') {
+        pushFailure(entry, settled.reason?.message || 'Scrape failed');
+        continue;
+      }
+
+      const scrapeData = settled.value.data;
+      const wordCount = scrapeData?.metadata?.word_count || 0;
+      const markdown = typeof scrapeData?.markdown === 'string' ? scrapeData.markdown.trim() : '';
+      const extracted = wordCount > 0 || markdown.length > 0;
+
+      if (!settled.value.success || !extracted) {
+        pushFailure(
+          entry,
+          settled.value.success ? 'Empty extraction' : (settled.value.error || 'Scrape failed'),
+        );
+        continue;
+      }
+
+      let relevantPassages: any = undefined;
+      if (scrapeData?.markdown) {
+        const ctxWindow = contentMode === 'snippet' ? 0 : RELEVANCE_CONTEXT_WINDOW;
+        relevantPassages = extractRelevantPassages(
+          scrapeData.markdown,
+          query,
+          {
+            topN: RELEVANCE_TOP_N,
+            contextWindow: ctxWindow,
+            minScore: RELEVANCE_MIN_SCORE,
+          }
+        );
+      }
+
+      const resultData = contentMode !== 'full'
+        ? stripMarkdownFromData(scrapeData, contentMode)
+        : scrapeData;
+
+      results.push({
+        url: entry.url,
+        title: entry.title,
+        snippet: entry.snippet,
+        source_type: 'scraped',
+        success: true,
+        data: resultData,
+        relevant_passages: relevantPassages,
+      });
     }
 
     const response = {
@@ -990,15 +1001,17 @@ export class SearXNGMCPServer {
           breadth,
           discovery_route: discoveryRoute,
           fallback_reason: fallbackReason,
-          pages_scraped: scrapedResults.filter((r) => r.success).length,
+          pages_scraped: results.filter((r) => r.success && r.source_type === 'scraped').length,
           errors,
         },
-        results: [...snippetOnlyResults, ...scrapedResults],
+        results,
         elapsed_ms: Date.now() - startTime,
       }, null, 2) }],
     };
 
-    await this.cache.set(cacheKey, response, COMPOSITE_CACHE_TTL_MS);
+    if (errors.length === 0) {
+      await this.cache.set(cacheKey, response, COMPOSITE_CACHE_TTL_MS);
+    }
     return response;
   }
 
@@ -1028,5 +1041,17 @@ export class SearXNGMCPServer {
   }
 }
 
-const server = new SearXNGMCPServer();
-server.run().catch(console.error);
+function isDirectCli(): boolean {
+  const entry = process.argv[1];
+  if (!entry) return false;
+  try {
+    return import.meta.url === pathToFileURL(resolve(entry)).href;
+  } catch {
+    return false;
+  }
+}
+
+if (isDirectCli()) {
+  const server = new SearXNGMCPServer();
+  server.run().catch(console.error);
+}

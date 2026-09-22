@@ -106,6 +106,30 @@ describe('FourgetClient', () => {
       expect(result.web[0].description).toBe('Some text SELECT 1 more textblockquote content');
     });
 
+    it('preserves live 4get string descriptions', async () => {
+      mockedAxios.get.mockResolvedValueOnce({
+        data: {
+          status: 'ok',
+          web: [
+            {
+              title: 'Live String Result',
+              url: 'https://example.com/live',
+              description: 'PostgreSQL SSI wiki page summary from live 4get',
+              date: null,
+              type: 'web',
+            },
+          ],
+          npt: '',
+        },
+      });
+
+      const result = await client.search('ssi');
+
+      expect(result.web[0].description).toBe(
+        'PostgreSQL SSI wiki page summary from live 4get',
+      );
+    });
+
     it('handles null/undefined description gracefully', async () => {
       mockedAxios.get.mockResolvedValueOnce({
         data: {

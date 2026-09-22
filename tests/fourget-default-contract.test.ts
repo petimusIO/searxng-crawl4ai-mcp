@@ -25,14 +25,14 @@ describe('4get default scraper contract', () => {
   it('describes and caches the primary-fallback strategy accurately', () => {
     expect(indexSource).toContain('Search the web using 4get with SearXNG fallback');
     expect(indexSource).not.toContain('search:merged:');
-    expect(indexSource).toContain("const RESEARCH_CACHE_PREFIX        = 'research:v2'");
-    expect(indexSource).toContain("buildCacheKey('search_and_scrape:v2'");
+    expect(indexSource).toContain("const RESEARCH_CACHE_PREFIX        = 'research:v3'");
+    expect(indexSource).toContain("buildCacheKey('search_and_scrape:v3'");
   });
 
   it('uses structured keys and isolates every discovery cache by scraper', () => {
     const markers = [
-      "buildCacheKey('search:primary-fallback', [",
-      "buildCacheKey('search_and_scrape:v2', [",
+      "buildCacheKey('search:primary-fallback:v2', [",
+      "buildCacheKey('search_and_scrape:v3', [",
       'buildCacheKey(RESEARCH_CACHE_PREFIX, [',
     ];
 
@@ -52,7 +52,7 @@ describe('4get default scraper contract', () => {
   });
 
   it('isolates search_web cache entries by result limit', () => {
-    const start = indexSource.indexOf("buildCacheKey('search:primary-fallback', [");
+    const start = indexSource.indexOf("buildCacheKey('search:primary-fallback:v2', [");
     const end = indexSource.indexOf(']);', start);
     expect(indexSource.slice(start, end)).toContain('limit');
   });

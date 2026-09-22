@@ -18,5 +18,7 @@ process.env.REDIS_URL = 'redis://localhost:6380';
 process.env.WEB_SEARCH_CRAWL_TIMEOUT_MS = '1000';
 process.env.WEB_SEARCH_CRAWL_BATCH_TIMEOUT_MS = '1500';
 
-// The imported module auto-starts when run directly
-await import('./dist/index.js');
+// Import stays side-effect-free; the wrapper starts stdio explicitly.
+const { SearXNGMCPServer } = await import('./dist/index.js');
+const server = new SearXNGMCPServer();
+await server.run();

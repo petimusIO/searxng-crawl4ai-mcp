@@ -37,10 +37,20 @@ export function mergeSearchResults(
   // Process SearXNG results first (primary source, determines ordering)
   for (const sr of searxngResults) {
     const normalized = normalizeUrl(sr.url);
+    if (merged.has(normalized)) {
+      const existing = merged.get(normalized)!;
+      if ((sr.content || '').length > existing.content.length) {
+        existing.content = sr.content || '';
+      }
+      if (!existing.publishedDate && sr.publishedDate) {
+        existing.publishedDate = sr.publishedDate;
+      }
+      continue;
+    }
     searxngOrder.push(normalized);
     merged.set(normalized, {
       title: sr.title,
-      url: normalized,
+      url: sr.url,
       content: sr.content || '',
       publishedDate: sr.publishedDate || null,
       source: 'searxng',
@@ -69,7 +79,7 @@ export function mergeSearchResults(
       // New — 4get-only result
       fourgetOnly.push({
         title: fr.title,
-        url: normalized,
+        url: fr.url,
         content: fr.description,
         publishedDate: fr.date,
         source: 'fourget',

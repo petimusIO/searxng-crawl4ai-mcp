@@ -22,48 +22,69 @@ describe('mergeSearchResults', () => {
   const fourgetResults: FourgetWebResult[] = [
     {
       title: '4get Result A',
-      url: 'https://example.com/PAGE1',  // case-diff, same as page1 after normalization
+      url: 'https://example.com/page1#intro',
       description: 'Short from 4get',
       date: '2026-01-15T00:00:00.000Z',
       type: 'web',
     },
     {
       title: '4get Result B',
-      url: 'https://www.example.com/unique',  // www prefix, stripped by normalizeUrl
+      url: 'https://www.example.com/unique',
       description: 'A unique result only from 4get',
       date: null,
       type: 'web',
     },
   ];
 
-  it('deduplicates by normalized URL', () => {
+  it('deduplicates by conservative identity and keeps original discovery URLs', () => {
     const merged = mergeSearchResults(searxngResults, fourgetResults);
 
     // 3 unique URLs: page1 (deduped), page2 (searxng only), unique (4get only)
     expect(merged).toHaveLength(3);
 
     const urls = merged.map((r) => r.url);
-    // Normalized URLs
-    expect(urls).toContain('https://example.com/page1');
+    expect(urls).toContain('https://example.com/page1?utm_source=twitter');
     expect(urls).toContain('https://example.com/page2');
-    expect(urls).toContain('https://example.com/unique');
+    expect(urls).toContain('https://www.example.com/unique');
   });
 
   it('prefers longer snippet when both sources match same URL', () => {
     const merged = mergeSearchResults(searxngResults, fourgetResults);
 
-    const page1 = merged.find((r) => r.url === 'https://example.com/page1');
+    const page1 = merged.find((r) => r.url === 'https://example.com/page1?utm_source=twitter');
     expect(page1).toBeDefined();
     expect(page1!.content).toBe('A long descriptive snippet from SearXNG'); // longer wins
     expect(page1!.source).toBe('both');
   });
 
+  it('does not collapse path-case variants and keeps each discovery URL', () => {
+    const merged = mergeSearchResults(
+      [{
+        title: 'SSI',
+        url: 'https://wiki.postgresql.org/wiki/SSI',
+        content: 'Serializable Snapshot Isolation',
+        score: 0.9,
+      }],
+      [{
+        title: 'ssi',
+        url: 'https://wiki.postgresql.org/wiki/ssi',
+        description: 'lowercased wiki path',
+        date: null,
+        type: 'web',
+      }],
+    );
+
+    expect(merged).toHaveLength(2);
+    expect(merged[0].url).toBe('https://wiki.postgresql.org/wiki/SSI');
+    expect(merged[1].url).toBe('https://wiki.postgresql.org/wiki/ssi');
+  });
+
   it('marks source correctly', () => {
     const merged = mergeSearchResults(searxngResults, fourgetResults);
 
-    const both = merged.find((r) => r.url === 'https://example.com/page1');
+    const both = merged.find((r) => r.url === 'https://example.com/page1?utm_source=twitter');
     const searxngOnly = merged.find((r) => r.url === 'https://example.com/page2');
-    const fourgetOnly = merged.find((r) => r.url === 'https://example.com/unique');
+    const fourgetOnly = merged.find((r) => r.url === 'https://www.example.com/unique');
 
     expect(both!.source).toBe('both');
     expect(searxngOnly!.source).toBe('searxng');
@@ -110,12 +131,91 @@ describe('mergeSearchResults', () => {
   it('preserves publishedDate from 4get when available', () => {
     const merged = mergeSearchResults([], fourgetResults);
 
-    // The page1 result was deduped with SearXNG (which had no publishedDate)
-    // So the merged result at page1 should inherit the 4get date
-    const page1 = merged.find((r) => r.url === 'https://example.com/page1');
+    const page1 = merged.find((r) => r.url === 'https://example.com/page1#intro');
     expect(page1!.publishedDate).toBe('2026-01-15T00:00:00.000Z');
     // The unique 4get result (result B) has date: null
-    const fourgetOnly = merged.find((r) => r.url === 'https://example.com/unique');
+    const fourgetOnly = merged.find((r) => r.url === 'https://www.example.com/unique');
     expect(fourgetOnly!.publishedDate).toBeNull();
+  });
+
+  it('collapses SearXNG fragment variants to one first-ranked original page', () => {
+    const merged = mergeSearchResults(
+      [
+        {
+          title: 'First',
+          url: 'https://docs.example/page#first',
+          content: 'First preserved evidence',
+          score: 0.91,
+        },
+        {
+          title: 'Second',
+          url: 'https://docs.example/page#second',
+          content: 'Second evidence',
+          score: 0.80,
+        },
+        {
+          title: 'Other',
+          url: 'https://docs.example/other',
+          content: 'Other',
+          score: 0.70,
+        },
+      ],
+      [],
+    );
+
+    expect(merged.map((r) => r.title)).toEqual(['First', 'Other']);
+    expect(merged[0].url).toBe('https://docs.example/page#first');
+    expect(merged[0].title).toBe('First');
+    expect(merged[0].content).toBe('First preserved evidence');
+    expect(merged[0].searxngScore).toBe(0.91);
+    expect(merged[1].url).toBe('https://docs.example/other');
+  });
+
+  it('keeps a longer later SearXNG snippet on the first-ranked original page', () => {
+    const merged = mergeSearchResults(
+      [
+        {
+          title: 'First',
+          url: 'https://docs.example/page#first',
+          content: 'short',
+          score: 0.91,
+        },
+        {
+          title: 'Second',
+          url: 'https://docs.example/page#second',
+          content: 'Second evidence is deliberately longer',
+          score: 0.80,
+        },
+      ],
+      [],
+    );
+
+    expect(merged).toHaveLength(1);
+    expect(merged[0].url).toBe('https://docs.example/page#first');
+    expect(merged[0].title).toBe('First');
+    expect(merged[0].content).toBe('Second evidence is deliberately longer');
+  });
+
+  it('fills a missing SearXNG publication date from a later fragment duplicate', () => {
+    const merged = mergeSearchResults(
+      [
+        {
+          title: 'First',
+          url: 'https://docs.example/page#first',
+          content: 'First preserved evidence',
+        },
+        {
+          title: 'Second',
+          url: 'https://docs.example/page#second',
+          content: 'Second evidence',
+          publishedDate: '2026-03-01T00:00:00.000Z',
+        },
+      ],
+      [],
+    );
+
+    expect(merged).toHaveLength(1);
+    expect(merged[0].url).toBe('https://docs.example/page#first');
+    expect(merged[0].publishedDate).toBe('2026-03-01T00:00:00.000Z');
   });
 });

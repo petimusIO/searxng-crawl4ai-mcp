@@ -361,6 +361,44 @@ describe('discoverUrls', () => {
     expect(fourget.search).not.toHaveBeenCalled();
   });
 
+  it('keeps original discovery URLs instead of rewritten cache keys', async () => {
+    const fourget = {
+      search: vi.fn().mockResolvedValue({
+        status: 'ok',
+        web: [
+          {
+            title: 'PostgreSQL SSI',
+            url: 'https://wiki.postgresql.org/wiki/SSI',
+            description: 'Serializable Snapshot Isolation',
+            date: null,
+            type: 'web',
+          },
+          ...fourgetResults(9).map((result, index) => ({
+            ...result,
+            url: `https://fourget.example/keep/${index}`,
+          })),
+        ],
+        answer: [],
+        npt: '',
+      }),
+    };
+    const searxng = { search: vi.fn() };
+
+    const result = await discoverUrls({
+      query: 'postgresql ssi',
+      fourget,
+      searxng,
+      scraper: 'ddg',
+      maxResults: 10,
+      minFourgetResults: 5,
+      fourgetTimeoutMs: 50,
+    });
+
+    expect(result.route).toBe('fourget');
+    expect(result.results[0].url).toBe('https://wiki.postgresql.org/wiki/SSI');
+    expect(searxng.search).not.toHaveBeenCalled();
+  });
+
   it('treats fragment variants as one URL for the quality gate', async () => {
     const base = fourgetResults(1)[0];
     const fourget = {

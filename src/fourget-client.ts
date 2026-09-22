@@ -12,7 +12,7 @@ interface FourgetRawDescriptionItem {
 interface FourgetRawWebResult {
   title: string;
   url: string;
-  description: FourgetRawDescriptionItem[] | null;
+  description: FourgetRawDescriptionItem[] | string | null;
   date: number | null;   // Unix timestamp (seconds)
   type: string;
 }
@@ -42,9 +42,13 @@ export interface FourgetSearchResponse {
 
 /**
  * Flatten 4get's rich description array into a plain text string.
- * Each item is `{ type: string, value: string }` — we concatenate all values.
+ * Live 4get may return a plain string; existing callers also send
+ * `{ type, value }[]` or null.
  */
-function flattenDescription(raw: FourgetRawDescriptionItem[] | null | undefined): string {
+function flattenDescription(
+  raw: FourgetRawDescriptionItem[] | string | null | undefined,
+): string {
+  if (typeof raw === 'string') return raw;
   if (!raw || !Array.isArray(raw)) return '';
   return raw
     .map((item) => item?.value ?? '')
