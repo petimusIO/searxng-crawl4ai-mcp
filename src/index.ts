@@ -13,11 +13,15 @@ import { SearXNGClient } from './searxng-client.js';
 import { ScrapeClient, ScrapeClientResponse } from './scrape-client.js';
 import { RedisCache } from './redis-cache.js';
 import { normalizeUrl } from './url-normalizer.js';
-import { extractRelevantPassages } from './passage-extractor.js';
+import { extractRelevantPassages, parseDocumentSections, rankDocumentSections } from './passage-extractor.js';
 import { stripMarkdownFromData, ContentMode } from './content-utils.js';
 import { DEFAULT_FOURGET_SCRAPER, FourgetClient } from './fourget-client.js';
 import { discoverUrls } from './url-discovery.js';
 import { buildCacheKey } from './cache-key.js';
+import { resolveErrorBudget, validateResearchArgs, validateScrapeArgs } from './budget-args.js';
+import { DocumentStore } from './document-store.js';
+import { flattenPackedSource, packBudgetedResponse, packQuickResearch, packSectionIndex } from './response-packer.js';
+import { attachResponseBudget, boundUpstreamError, compactUntrustedText, countResponseTokens, DEFAULT_MAX_TOKENS, isStableErrorCode, prepareSafeErrorPayload } from './token-budget.js';
 import express from 'express';
 import http from 'http';
 
@@ -49,7 +53,7 @@ const RESEARCH_MAX_RESULTS_SINGLE  = 3;
 const RESEARCH_MAX_RESULTS_MULTI   = 5;
 const RESEARCH_SCRAPE_TIMEOUT_MS   = Number(process.env.MCP_RESEARCH_SCRAPE_TIMEOUT_MS) || 3000;
 const RESEARCH_NORMAL_POOL_SIZE    = 15;
-const RESEARCH_CACHE_PREFIX        = 'research:v3';
+const RESEARCH_CACHE_PREFIX        = 'research:v5';
 const FOURGET_PRIMARY_TIMEOUT_MS   = Number(process.env.MCP_FOURGET_PRIMARY_TIMEOUT_MS) || 1500;
 const FOURGET_MIN_RESULTS          = Number(process.env.MCP_FOURGET_MIN_RESULTS) || 5;
 
@@ -60,6 +64,7 @@ export class SearXNGMCPServer {
   private fourget: FourgetClient;
   private cache: RedisCache;
   private _scrapeClient?: ScrapeClient;
+  private documentStore?: DocumentStore;
   // network server state (optional)
   private expressApp?: express.Application;
   private httpServer?: http.Server;
@@ -184,6 +189,191 @@ export class SearXNGMCPServer {
     } catch (err) {
       logger.warn('mcp:http:disabled', { reason: String(err) });
     }
+  }
+
+  private getDocumentStore(): DocumentStore {
+    if (!this.documentStore) this.documentStore = new DocumentStore();
+    return this.documentStore;
+  }
+
+  private mcpJson(payload: Record<string, unknown>, maxTokens: number = DEFAULT_MAX_TOKENS) {
+    const isError = typeof payload.error === 'string';
+    const safe = isError ? prepareSafeErrorPayload(payload) : { ...payload };
+    if (typeof safe.query === 'string') {
+      safe.query = compactUntrustedText(safe.query);
+    }
+    let packed = attachResponseBudget(safe, maxTokens);
+    let text = JSON.stringify(packed, null, 2);
+    if (countResponseTokens(text) > maxTokens) {
+      packed = attachResponseBudget(prepareSafeErrorPayload(safe), maxTokens);
+      text = JSON.stringify(packed, null, 2);
+    }
+    if (countResponseTokens(text) > maxTokens) {
+      const code = typeof safe.error === 'string' && isStableErrorCode(safe.error)
+        ? safe.error
+        : (isError ? 'upstream_error' : 'budget_too_small');
+      packed = attachResponseBudget({
+        error: code,
+        ...(typeof safe.required_tokens === 'number' ? { required_tokens: safe.required_tokens } : {}),
+      }, maxTokens);
+      text = JSON.stringify(packed, null, 2);
+    }
+    return {
+      content: [{ type: 'text', text }],
+    };
+  }
+
+  private canonicalSourceData(retained: { markdown: string; title: string }) {
+    const trimmed = retained.markdown.trim();
+    return {
+      markdown: retained.markdown,
+      metadata: {
+        title: retained.title,
+        word_count: trimmed ? trimmed.split(/\s+/).length : 0,
+      },
+    };
+  }
+
+  private cachedDocumentIdsLive(cached: { content?: Array<{ text?: string }> }): boolean {
+    try {
+      const body = JSON.parse(cached.content?.[0]?.text || '{}') as {
+        results?: Array<{ document_id?: string }>;
+        document_id?: string;
+      };
+      const ids = [
+        ...(body.document_id ? [body.document_id] : []),
+        ...(body.results ?? []).map((result) => result.document_id).filter((id): id is string => Boolean(id)),
+      ];
+      if (ids.length === 0) return true;
+      const store = this.getDocumentStore();
+      return ids.every((id) => store.has(id));
+    } catch {
+      return false;
+    }
+  }
+
+  private retainDocument(url: string, title: string, markdown: string) {
+    const sections = parseDocumentSections(markdown);
+    const saved = this.getDocumentStore().save({ url, title, markdown, sections });
+    if (!saved.ok) {
+      return {
+        url,
+        title,
+        markdown,
+        sections,
+        document_id: undefined,
+        read_more_unavailable: true as const,
+      };
+    }
+    return {
+      url: saved.document.url,
+      title: saved.document.title,
+      markdown: saved.document.markdown,
+      sections: saved.document.sections,
+      document_id: saved.document.document_id,
+      saved_at: saved.document.saved_at,
+      expires_at: saved.document.expires_at,
+      read_more_unavailable: false as const,
+    };
+  }
+
+  private packSavedDocument(
+    document: {
+      document_id: string;
+      url: string;
+      title: string;
+      markdown: string;
+      sections: ReturnType<typeof parseDocumentSections>;
+      saved_at?: number;
+      expires_at?: number;
+    },
+    request: { query?: string; section_ids?: string[]; list_sections: boolean; section_offset?: number; max_tokens: number; content_mode: ContentMode },
+  ) {
+    if (request.list_sections) {
+      const offset = request.section_offset ?? 0;
+      if (offset >= document.sections.length) {
+        return this.mcpJson({
+          error: 'invalid_arguments',
+          message: 'section_offset is beyond the section list',
+        }, request.max_tokens);
+      }
+      const packed = packSectionIndex({
+        url: document.url,
+        title: document.title,
+        document_id: document.document_id,
+        sections: document.sections,
+        sectionOffset: offset,
+        maxTokens: request.max_tokens,
+      });
+      return { content: [{ type: 'text', text: packed.text }] };
+    }
+
+    if (request.section_ids) {
+      const unknown = request.section_ids.filter((id) => !document.sections.some((section) => section.id === id));
+      if (unknown.length > 0) {
+        return this.mcpJson({
+          error: 'invalid_arguments',
+          message: 'unknown section_ids',
+          unknown,
+        }, request.max_tokens);
+      }
+    }
+
+    const query = request.query ?? '';
+    const packed = flattenPackedSource(packBudgetedResponse({
+      query,
+      contentMode: request.content_mode,
+      maxTokens: request.max_tokens,
+      sources: [{
+        url: document.url,
+        title: document.title,
+        success: true,
+        document_id: document.document_id,
+        saved_at: document.saved_at,
+        expires_at: document.expires_at,
+        data: this.canonicalSourceData(document),
+        markdown: document.markdown,
+        sections: document.sections,
+        ranked: rankDocumentSections(document.sections, query),
+      }],
+      envelope: { url: document.url, success: true },
+      requestedSectionIds: request.section_ids,
+      deferFinalize: true,
+    }), request.max_tokens, request.section_ids);
+    return { content: [{ type: 'text', text: packed.text }] };
+  }
+
+  private packScrapedDocument(
+    result: ScrapeClientResponse,
+    retained: ReturnType<SearXNGMCPServer['retainDocument']>,
+    request: { query?: string; max_tokens: number; content_mode: ContentMode },
+  ) {
+    const query = request.query ?? '';
+    const packed = flattenPackedSource(packBudgetedResponse({
+      query,
+      contentMode: request.content_mode,
+      maxTokens: request.max_tokens,
+      sources: [{
+        url: retained.url,
+        title: retained.title,
+        success: Boolean(result.success && retained.markdown.trim()),
+        error: result.success ? undefined : result.error,
+        document_id: retained.document_id,
+        read_more_unavailable: retained.read_more_unavailable,
+        saved_at: retained.saved_at,
+        expires_at: retained.expires_at,
+        data: this.canonicalSourceData(retained),
+        markdown: retained.markdown,
+        sections: retained.sections,
+        ranked: rankDocumentSections(retained.sections, query),
+      }],
+      envelope: {
+        success: result.success,
+        url: result.url,
+        ...(result.error ? { error: result.error } : {}),
+      },
+    }), request.max_tokens);
+    return { content: [{ type: 'text', text: packed.text }] };
   }
 
   /** Lazily initialise the scrape client so env-var fallback order works. */
@@ -314,7 +504,14 @@ export class SearXNGMCPServer {
                   type: 'string',
                   enum: ['full', 'relevant_only', 'snippet'],
                   description: 'Response content mode: "full" (everything), "relevant_only" (no full markdown), "snippet" (compact, no context)',
-                  default: 'full',
+                  default: 'relevant_only',
+                },
+                max_tokens: {
+                  type: 'integer',
+                  description: 'Maximum o200k_base tokens for the serialized MCP response, including quick, deep, empty, and error replies (default 6000, min 512, max 32000)',
+                  default: 6000,
+                  minimum: 512,
+                  maximum: 32000,
                 },
                 scraper: {
                   type: 'string',
@@ -327,13 +524,35 @@ export class SearXNGMCPServer {
           },
           {
             name: 'scrape_url',
-            description: 'Scrape a URL using CRW (fast content extraction)',
+            description: 'Scrape a URL using CRW (fast content extraction), or read a saved document by document_id',
             inputSchema: {
               type: 'object',
               properties: {
                 url: {
                   type: 'string',
-                  description: 'The URL to scrape',
+                  description: 'The URL to scrape. Exactly one of url or document_id is required.',
+                },
+                document_id: {
+                  type: 'string',
+                  description: 'Opaque saved-document id from a prior research or scrape_url response',
+                },
+                query: {
+                  type: 'string',
+                  description: 'Select relevant whole sections from the saved or freshly scraped document',
+                },
+                section_ids: {
+                  type: 'array',
+                  items: { type: 'string' },
+                  description: 'Return these saved whole sections. Requires document_id. Exclusive with query and list_sections.',
+                },
+                list_sections: {
+                  type: 'boolean',
+                  description: 'Return a paginated section index without bodies',
+                },
+                section_offset: {
+                  type: 'integer',
+                  description: 'Nonnegative index into the section list when list_sections is true',
+                  minimum: 0,
                 },
                 formats: {
                   type: 'array',
@@ -354,11 +573,17 @@ export class SearXNGMCPServer {
                 content_mode: {
                   type: 'string',
                   enum: ['full', 'relevant_only', 'snippet'],
-                  description: 'Response mode: "full" returns everything, "relevant_only" strips full markdown, "snippet" returns only key passages with no context',
-                  default: 'full',
+                  description: 'Response mode: "full" returns everything if it fits, "relevant_only" strips full markdown, "snippet" returns only key passages with no context',
+                  default: 'relevant_only',
+                },
+                max_tokens: {
+                  type: 'integer',
+                  description: 'Maximum o200k_base tokens for the serialized MCP response (default 6000, min 512, max 32000)',
+                  default: 6000,
+                  minimum: 512,
+                  maximum: 32000,
                 },
               },
-              required: ['url'],
             },
           },
         ] as Tool[],
@@ -465,58 +690,82 @@ export class SearXNGMCPServer {
   }
 
   /**
-   * Scrape a single URL via CRW with caching.
-   * Delegates to cachedScrapeUrl for unified per-URL caching.
+   * Scrape a URL or read a saved document. Validation happens before any crawl.
    */
   private async handleScrapeUrl(args: any) {
-    const { url, formats, timeout, content_mode } = args;
+    const parsed = validateScrapeArgs(args);
+    if (!parsed.ok) {
+      return this.mcpJson({ error: parsed.error, message: parsed.message }, resolveErrorBudget(args));
+    }
+    const request = parsed.value;
+
+    if (request.document_id) {
+      const lookedUp = this.getDocumentStore().get(request.document_id);
+      if (!lookedUp.ok) {
+        return this.mcpJson({
+          error: 'document_unavailable',
+          document_id: request.document_id,
+          reason: lookedUp.reason,
+          guidance: 'Saved document is missing or expired. Call scrape_url with the original url.',
+        }, request.max_tokens);
+      }
+      return this.packSavedDocument(lookedUp.document, request);
+    }
+
+    const url = request.url as string;
+    const existing = this.getDocumentStore().getByUrl(url);
+    if (existing.ok) {
+      return this.packSavedDocument(existing.document, request);
+    }
 
     logger.info(`Scraping with CRW: ${url}`);
 
     try {
       const result = await this.cachedScrapeUrl(
         url,
-        formats || ['markdown'],
-        timeout || 30000
+        args.formats || ['markdown'],
+        args.timeout || 30000
       );
-
-      // Extract passages (no query for direct scrape — returns first N paragraphs)
-      let relevantPassages: any = undefined;
-      if (result.data?.markdown) {
-        const ctxWindow = content_mode === 'snippet' ? 0 : RELEVANCE_CONTEXT_WINDOW;
-        relevantPassages = extractRelevantPassages(result.data.markdown, '', {
-          topN: RELEVANCE_TOP_N,
-          contextWindow: ctxWindow,
-          minScore: 0,
-        });
+      const markdown = typeof result.data?.markdown === 'string' ? result.data.markdown : '';
+      const title = (result.data?.metadata as { title?: string } | undefined)?.title || url;
+      if (!result.success || !markdown.trim()) {
+        const bounded = boundUpstreamError(
+          result.success ? 'Empty extraction' : (result.error || 'scrape_failed'),
+        );
+        return this.mcpJson({
+          success: false,
+          url,
+          error: bounded.error,
+          ...(bounded.diagnostic ? { diagnostic: bounded.diagnostic } : {}),
+        }, request.max_tokens);
       }
-
-      // Strip full markdown if not in 'full' mode
-      const responseData: any = { ...result };
-      if (responseData.data) {
-        responseData.data = stripMarkdownFromData(responseData.data, content_mode);
+      const retained = this.retainDocument(url, title, markdown);
+      if (request.list_sections) {
+        if (!retained.document_id) {
+          return this.mcpJson({
+            success: true,
+            url,
+            read_more_unavailable: true,
+          }, request.max_tokens);
+        }
+        return this.packSavedDocument({
+          document_id: retained.document_id,
+          url: retained.url,
+          title: retained.title,
+          markdown: retained.markdown,
+          sections: retained.sections,
+          saved_at: retained.saved_at,
+          expires_at: retained.expires_at,
+        }, request);
       }
-
-      const response = {
-        content: [
-          {
-            type: 'text',
-            text: JSON.stringify(
-              {
-                ...responseData,
-                relevant_passages: relevantPassages,
-              },
-              null,
-              2
-            ),
-          },
-        ],
-      };
-
-      return response;
+      return this.packScrapedDocument(result, retained, request);
     } catch (error) {
       logger.error('CRW scrape failed:', error);
-      throw new Error(`CRW scrape failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      return this.mcpJson({
+        success: false,
+        url,
+        error: 'scrape_failed',
+      }, request.max_tokens);
     }
   }
 
@@ -540,7 +789,7 @@ export class SearXNGMCPServer {
     try {
       // 1. Check cache for search results
       const formatKey = (formats || ['markdown']).join(',');
-      const cacheKey = buildCacheKey('search_and_scrape:v3', [
+      const cacheKey = buildCacheKey('search_and_scrape:v4', [
         query,
         maxResults || '',
         mode || '',
@@ -725,25 +974,25 @@ export class SearXNGMCPServer {
    * Breadth: "single" (best result, default), "multi" (all top results)
    */
   private async handleResearch(args: any) {
-    const { query, depth, breadth, max_results, categories, formats, content_mode } = args;
-    const contentMode = (content_mode || 'full') as ContentMode;
+    const parsed = validateResearchArgs(args);
+    if (!parsed.ok) {
+      return this.mcpJson({ error: parsed.error, message: parsed.message }, resolveErrorBudget(args));
+    }
+
+    const { query, depth, breadth, max_results, categories, formats } = args;
+    const contentMode = parsed.value.content_mode;
+    const maxTokens = parsed.value.max_tokens;
     const scraper = args.scraper || DEFAULT_FOURGET_SCRAPER;
     const researchDepth = depth || 'normal';
     const researchBreadth = breadth || 'single';
 
     // Validate depth — deep is not yet implemented
     if (researchDepth === 'deep') {
-      return {
-        content: [{
-          type: 'text',
-          text: JSON.stringify({
-            query,
-            error: 'Deep research mode (site crawling) is not yet implemented. Use depth: "quick" or depth: "normal".',
-            research_metadata: { depth: 'deep', breadth: researchBreadth, pages_scraped: 0, errors: [] },
-            results: [],
-          }, null, 2),
-        }],
-      };
+      return this.mcpJson({
+        error: 'Deep research mode (site crawling) is not yet implemented. Use depth: "quick" or depth: "normal".',
+        research_metadata: { depth: 'deep', breadth: researchBreadth, pages_scraped: 0, errors: [] },
+        results: [],
+      }, maxTokens);
     }
 
     const startTime = Date.now();
@@ -759,9 +1008,10 @@ export class SearXNGMCPServer {
       formatKey,
       contentMode,
       scraper,
+      maxTokens,
     ]);
     const cached = await this.cache.get(cacheKey);
-    if (cached) return cached;
+    if (cached && this.cachedDocumentIdsLive(cached)) return cached;
 
     try {
       // 1. Discover URLs through 4get first, with SearXNG fallback
@@ -778,22 +1028,20 @@ export class SearXNGMCPServer {
       });
 
       if (discovery.results.length === 0) {
-        return {
-          content: [{ type: 'text', text: JSON.stringify({
-            query,
-            number_of_results: 0,
-            unresponsive_engines: discovery.unresponsiveEngines,
-            research_metadata: {
-              depth: researchDepth,
-              breadth: researchBreadth,
-              discovery_route: discovery.route,
-              fallback_reason: discovery.fallbackReason,
-              pages_scraped: 0,
-              errors: [],
-            },
-            results: [],
-          }, null, 2) }],
-        };
+        return this.mcpJson({
+          query,
+          number_of_results: 0,
+          unresponsive_engines: discovery.unresponsiveEngines,
+          research_metadata: {
+            depth: researchDepth,
+            breadth: researchBreadth,
+            discovery_route: discovery.route,
+            fallback_reason: discovery.fallbackReason,
+            pages_scraped: 0,
+            errors: [],
+          },
+          results: [],
+        }, maxTokens);
       }
 
       // 2. Determine result count
@@ -805,16 +1053,16 @@ export class SearXNGMCPServer {
       if (researchDepth === 'quick') {
         return this.handleQuickResearch(query, researchBreadth, topResults, contentMode,
           discovery.numberOfResults, discovery.unresponsiveEngines, startTime,
-          discovery.route, discovery.fallbackReason);
+          discovery.route, discovery.fallbackReason, maxTokens);
       }
 
-      // depth === 'normal' — scrape + BM25
+      // depth === 'normal' — scrape + whole-section budget packing
       return this.handleNormalResearch(query, researchBreadth, topResults, contentMode, formats,
         discovery.numberOfResults, discovery.unresponsiveEngines, startTime, cacheKey,
-        discovery.route, discovery.fallbackReason);
+        discovery.route, discovery.fallbackReason, maxTokens);
     } catch (error) {
       logger.error('Research workflow failed:', error);
-      throw new Error(`Research failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      return this.mcpJson({ error: 'research_failed' }, maxTokens);
     }
   }
 
@@ -831,6 +1079,7 @@ export class SearXNGMCPServer {
     startTime: number,
     discoveryRoute: string,
     fallbackReason?: string,
+    maxTokens: number = DEFAULT_MAX_TOKENS,
   ) {
     const resultCount = breadth === 'single' ? 1 : Math.min(topResults.length, 5);
     const results = topResults.slice(0, resultCount).map((r, i) => ({
@@ -842,8 +1091,8 @@ export class SearXNGMCPServer {
       relevance_rank: i + 1,
     }));
 
-    return {
-      content: [{ type: 'text', text: JSON.stringify({
+    const packed = packQuickResearch({
+      envelope: {
         query,
         number_of_results: numberOfResults,
         unresponsive_engines: unresponsiveEngines,
@@ -855,10 +1104,12 @@ export class SearXNGMCPServer {
           pages_scraped: 0,
           errors: [],
         },
-        results,
         elapsed_ms: Date.now() - startTime,
-      }, null, 2) }],
-    };
+      },
+      results,
+      maxTokens,
+    });
+    return { content: [{ type: 'text', text: packed.text }] };
   }
 
   /**
@@ -877,6 +1128,7 @@ export class SearXNGMCPServer {
     cacheKey: string,
     discoveryRoute: string,
     fallbackReason?: string,
+    maxTokens: number = DEFAULT_MAX_TOKENS,
   ) {
     // Determine how many URLs to scrape
     const urlsToScrapeCount = breadth === 'multi'
@@ -909,30 +1161,21 @@ export class SearXNGMCPServer {
       settledByIndex.push(...batchResults);
     }
 
-    type ResearchResult = {
-      url: string;
-      title: string;
-      snippet: string;
-      source_type: 'scraped' | 'snippet';
-      success: boolean;
-      data?: any;
-      relevant_passages?: any;
-      error?: string;
-      relevance_rank?: number;
-    };
-
-    const results: ResearchResult[] = [];
+    type PackSource = Parameters<typeof packBudgetedResponse>[0]['sources'][number];
+    const packSources: PackSource[] = [];
     const errors: Array<{ url: string; error: string }> = [];
 
     const pushFailure = (entry: SelectedSource, errMsg: string) => {
       errors.push({ url: entry.url, error: errMsg });
-      results.push({
+      packSources.push({
         url: entry.url,
         title: entry.title,
         snippet: entry.snippet,
         source_type: 'snippet',
         success: false,
         error: errMsg,
+        sections: [],
+        ranked: [],
       });
     };
 
@@ -962,37 +1205,39 @@ export class SearXNGMCPServer {
         continue;
       }
 
-      let relevantPassages: any = undefined;
-      if (scrapeData?.markdown) {
-        const ctxWindow = contentMode === 'snippet' ? 0 : RELEVANCE_CONTEXT_WINDOW;
-        relevantPassages = extractRelevantPassages(
-          scrapeData.markdown,
-          query,
-          {
-            topN: RELEVANCE_TOP_N,
-            contextWindow: ctxWindow,
-            minScore: RELEVANCE_MIN_SCORE,
-          }
-        );
-      }
-
-      const resultData = contentMode !== 'full'
-        ? stripMarkdownFromData(scrapeData, contentMode)
-        : scrapeData;
-
-      results.push({
-        url: entry.url,
-        title: entry.title,
+      const originalMarkdown = typeof scrapeData?.markdown === 'string' ? scrapeData.markdown : markdown;
+      const retained = this.retainDocument(entry.url, entry.title, originalMarkdown);
+      packSources.push({
+        url: retained.url,
+        title: retained.title,
         snippet: entry.snippet,
         source_type: 'scraped',
         success: true,
-        data: resultData,
-        relevant_passages: relevantPassages,
+        document_id: retained.document_id,
+        read_more_unavailable: retained.read_more_unavailable,
+        saved_at: retained.saved_at,
+        expires_at: retained.expires_at,
+        data: this.canonicalSourceData(retained),
+        markdown: retained.markdown,
+        sections: retained.sections,
+        ranked: rankDocumentSections(retained.sections, query),
       });
     }
 
-    const response = {
-      content: [{ type: 'text', text: JSON.stringify({
+    const store = this.getDocumentStore();
+    for (const source of packSources) {
+      if (source.document_id && !store.has(source.document_id)) {
+        source.document_id = undefined;
+        source.read_more_unavailable = true;
+      }
+    }
+
+    const packed = packBudgetedResponse({
+      query,
+      contentMode,
+      maxTokens,
+      sources: packSources,
+      envelope: {
         query,
         number_of_results: numberOfResults,
         unresponsive_engines: unresponsiveEngines,
@@ -1001,15 +1246,15 @@ export class SearXNGMCPServer {
           breadth,
           discovery_route: discoveryRoute,
           fallback_reason: fallbackReason,
-          pages_scraped: results.filter((r) => r.success && r.source_type === 'scraped').length,
+          pages_scraped: packSources.filter((source) => source.success && source.source_type === 'scraped').length,
           errors,
         },
-        results,
         elapsed_ms: Date.now() - startTime,
-      }, null, 2) }],
-    };
+      },
+    });
+    const response = { content: [{ type: 'text', text: packed.text }] };
 
-    if (errors.length === 0) {
+    if (errors.length === 0 && !('error' in packed.payload)) {
       await this.cache.set(cacheKey, response, COMPOSITE_CACHE_TTL_MS);
     }
     return response;
