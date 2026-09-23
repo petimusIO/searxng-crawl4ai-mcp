@@ -25,6 +25,7 @@ export interface PackableSource {
   read_more_unavailable?: boolean;
   saved_at?: number;
   expires_at?: number;
+  fetch?: { status_code?: number; rendered_with?: string; elapsed_ms?: number };
   data?: Record<string, unknown>;
   markdown?: string;
   sections: DocumentSection[];
@@ -183,6 +184,7 @@ function sourceShell(source: PackableSource, contentMode: ContentMode, includeMa
     ...(source.read_more_unavailable ? { read_more_unavailable: true } : {}),
     ...(source.saved_at != null ? { saved_at: source.saved_at } : {}),
     ...(source.expires_at != null ? { expires_at: source.expires_at } : {}),
+    ...(source.fetch ? { fetch: source.fetch } : {}),
     ...(data ? { data } : {}),
     ...(includeMarkdown || contentMode !== 'full' ? {} : { full_content_omitted: true }),
     ...(source.success ? {

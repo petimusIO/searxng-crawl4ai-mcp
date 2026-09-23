@@ -10,7 +10,7 @@ import {
 import { config } from 'dotenv';
 import { logger } from './logger.js';
 import { SearXNGClient } from './searxng-client.js';
-import { ScrapeClient, ScrapeClientResponse } from './scrape-client.js';
+import { ScrapeClient, ScrapeClientResponse, scrapeProvenance } from './scrape-client.js';
 import { RedisCache } from './redis-cache.js';
 import { normalizeUrl } from './url-normalizer.js';
 import { extractRelevantPassages, parseDocumentSections, rankDocumentSections } from './passage-extractor.js';
@@ -358,6 +358,7 @@ export class SearXNGMCPServer {
         title: retained.title,
         success: Boolean(result.success && retained.markdown.trim()),
         error: result.success ? undefined : result.error,
+        fetch: scrapeProvenance(result),
         document_id: retained.document_id,
         read_more_unavailable: retained.read_more_unavailable,
         saved_at: retained.saved_at,
@@ -1213,6 +1214,7 @@ export class SearXNGMCPServer {
         snippet: entry.snippet,
         source_type: 'scraped',
         success: true,
+        fetch: scrapeProvenance(settled.value),
         document_id: retained.document_id,
         read_more_unavailable: retained.read_more_unavailable,
         saved_at: retained.saved_at,

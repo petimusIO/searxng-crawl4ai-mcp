@@ -74,6 +74,9 @@ export interface ScrapeClientResponse {
       description: string;
       language: string;
       word_count: number;
+      status_code?: number;
+      rendered_with?: string;
+      elapsed_ms?: number;
     };
   };
   error?: string;
@@ -282,9 +285,31 @@ export class ScrapeClient {
           description: metadata.description ?? '',  // normalize null to ''
           language: metadata.language ?? '',
           word_count: markdown ? markdown.split(/\s+/).filter(Boolean).length : 0,
+          ...(typeof metadata.statusCode === 'number' ? { status_code: metadata.statusCode } : {}),
+          ...(typeof metadata.renderedWith === 'string' && metadata.renderedWith ? { rendered_with: metadata.renderedWith } : {}),
+          ...(typeof metadata.elapsedMs === 'number' ? { elapsed_ms: metadata.elapsedMs } : {}),
         },
       },
       error: raw.error,
     };
   }
+}
+
+/**
+ * Extract fetch provenance (HTTP status, render path, CRW elapsed time) from a
+ * scrape result so callers can distinguish "the page said nothing" from
+ * "the page 404'd" or "the page was JS-rendered". Undefined when CRW sent none.
+ */
+export function scrapeProvenance(result: ScrapeClientResponse): {
+  status_code?: number;
+  rendered_with?: string;
+  elapsed_ms?: number;
+} | undefined {
+  const meta = result.data?.metadata;
+  if (!meta) return undefined;
+  const provenance: { status_code?: number; rendered_with?: string; elapsed_ms?: number } = {};
+  if (typeof meta.status_code === 'number') provenance.status_code = meta.status_code;
+  if (typeof meta.rendered_with === 'string' && meta.rendered_with) provenance.rendered_with = meta.rendered_with;
+  if (typeof meta.elapsed_ms === 'number') provenance.elapsed_ms = meta.elapsed_ms;
+  return Object.keys(provenance).length > 0 ? provenance : undefined;
 }
