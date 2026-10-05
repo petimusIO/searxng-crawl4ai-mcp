@@ -39,6 +39,7 @@ export class SearXNGClient {
       time_range?: string;
       format?: 'html' | 'json';
       safesearch?: 0 | 1 | 2;
+      timeoutMs?: number;
     } = {}
   ): Promise<SearXNGSearchResponse> {
     const searchParams = new URLSearchParams({
@@ -62,7 +63,7 @@ export class SearXNGClient {
           'Accept': 'application/json',
           'User-Agent': 'Firecrawl-MCP-Custom/1.0'
         },
-        timeout: 10000
+        timeout: options.timeoutMs ?? 10000
       });
 
       const data = response.data;
