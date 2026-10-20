@@ -367,14 +367,14 @@ function finalizePacked(
   return attach(payload, limit);
 }
 
-function requiredTokensForSection(
+function singleSectionPayload(
   envelope: Record<string, unknown>,
   source: PackableSource,
   section: DocumentSection,
   ranked: RankedSection | undefined,
   contentMode: ContentMode,
   query: string,
-): number {
+) {
   const result = sourceShell(source, contentMode, false, query);
   if (result.relevant_passages && result.sections) {
     result.relevant_passages.passages = [toPassage(section, ranked)];
@@ -384,7 +384,40 @@ function requiredTokensForSection(
     result.sections.included_ids = [section.id];
     result.sections.omitted_preview = [];
   }
-  return usedTokens({ ...envelope, results: [result] }, MAX_MAX_TOKENS);
+  return { ...envelope, results: [result] };
+}
+
+function requiredTokensForSection(
+  envelope: Record<string, unknown>,
+  source: PackableSource,
+  section: DocumentSection,
+  ranked: RankedSection | undefined,
+  contentMode: ContentMode,
+  query: string,
+): number {
+  return usedTokens(singleSectionPayload(envelope, source, section, ranked, contentMode, query), MAX_MAX_TOKENS);
+}
+
+function smallSectionFits(
+  request: PackRequest,
+  source: PackableSource,
+  section: DocumentSection,
+  ranked: RankedSection,
+): boolean {
+  const payload = singleSectionPayload(request.envelope, source, section, ranked, request.contentMode, request.query);
+  // Ordinary BPE tokens each contain at least one byte. This is a strict
+  // upper bound, not chars/4 or an assumption that fragment counts add up.
+  // Oversized/ambiguous cases still take the exact required-token path.
+  const wire = serializeResponseText({
+    ...payload,
+    budget: {
+      tokenizer: TOKENIZER_NAME,
+      limit: MAX_MAX_TOKENS,
+      used: Number.MAX_SAFE_INTEGER,
+      scope: BUDGET_SCOPE,
+    },
+  });
+  return Buffer.byteLength(wire, 'utf8') <= request.maxTokens;
 }
 
 function sectionStatus(requiredTokens: number, limit: number): OmittedPreview['status'] {
@@ -671,6 +704,12 @@ function packSections(request: PackRequest, includeMarkdown: boolean): PackSecti
       }
       if (tryAddPassage(payload, sourceIndex, section, ranked, request.query, request.maxTokens, planner, 'estimate')) {
         seenText.add(section.text);
+      } else if (smallSectionFits(request, source, section, ranked)) {
+        markOmitted(source, section, {
+          id: section.id,
+          ...headingPreview(section.heading),
+          status: 'section_omitted',
+        });
       } else {
         const required = requiredFor(source, section, ranked);
         const status = sectionStatus(required, request.maxTokens);

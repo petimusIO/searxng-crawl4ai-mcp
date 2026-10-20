@@ -7,6 +7,7 @@
  */
 
 import MiniSearch from 'minisearch';
+import MarkdownIt from 'markdown-it';
 import remarkGfm from 'remark-gfm';
 import remarkParse from 'remark-parse';
 import { unified } from 'unified';
@@ -107,6 +108,9 @@ const MIXED_EXTRACT_SOURCE = `${SPECIAL_BOUNDED}|${LATIN_IDENTIFIER}|${DECIMAL}|
 const NEEDS_SEGMENTER = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}\p{Script=Arabic}\p{Script=Hebrew}\p{Script=Thai}\p{Script=Devanagari}]/u;
 const wordSegmenter = new Intl.Segmenter(undefined, { granularity: 'word' });
 const markdownParser = unified().use(remarkParse).use(remarkGfm).freeze();
+// Ranking needs block boundaries, not an inline rendering tree. Definitions
+// still use remark so reference resolution and attached source spans stay exact.
+const blockParser = new MarkdownIt({ html: true }).disable('inline');
 
 function isStructural(type: string): boolean {
   return STRUCTURAL_TYPES.has(type);
@@ -149,7 +153,75 @@ function collectReferenceIds(node: unknown, refs: StructuralRef[]): void {
   for (const child of typed.children) collectReferenceIds(child, refs);
 }
 
+function fastMarkdownBlocks(markdown: string): StructuralBlock[] | undefined {
+  if (markdown.includes(']:') || markdown.startsWith('\uFEFF')) return undefined;
+  const starts = [0];
+  for (const match of markdown.matchAll(/\r\n|\r|\n/g)) {
+    starts.push(match.index! + match[0].length);
+  }
+  const lineEnd = (line: number): number => {
+    let end = starts[line + 1] ?? markdown.length;
+    if (markdown[end - 1] === '\n') end--;
+    if (markdown[end - 1] === '\r') end--;
+    return end;
+  };
+  const tokens = blockParser.parse(markdown, {});
+  // markdown-it maps exclude trailing indented blank code lines that remark
+  // retains. Use its exact node endpoints rather than guessing those spans.
+  if (tokens.some((token) => token.type === 'code_block')) return undefined;
+  // HTML can terminate a lazy list/quote differently across parsers. Keep the
+  // reference parser for mixed containers rather than changing section units.
+  if (markdown.includes('<') && tokens.some((token) => (
+    token.type === 'blockquote_open' || token.type === 'bullet_list_open' || token.type === 'ordered_list_open'
+  ))) return undefined;
+  const blocks: StructuralBlock[] = [];
+  for (const token of tokens) {
+    if (token.level !== 0 || !token.map || token.nesting === -1) continue;
+    let [first, last] = token.map;
+    last--;
+    while (last > first) {
+      const line = markdown.slice(starts[last], lineEnd(last));
+      if (!/^[ \t]*$/.test(line)) break;
+      // NBSP/BOM lines are paragraph content, not CommonMark blank lines.
+      last--;
+    }
+    let start = starts[first];
+    let end = lineEnd(last);
+    if (token.type === 'fence') {
+      const closing = new RegExp(`^ {0,3}${token.markup[0]}{${token.markup.length},}[ \\t]*$`);
+      if (last === first || !closing.test(markdown.slice(starts[last], end))) {
+        end = markdown.length;
+      }
+    }
+    const type = token.type === 'heading_open' ? 'heading'
+      : token.type === 'paragraph_open' ? 'paragraph'
+      : token.type === 'blockquote_open' ? 'blockquote'
+      : token.type === 'bullet_list_open' || token.type === 'ordered_list_open' ? 'list'
+      : token.type === 'fence' ? 'code'
+      : token.type === 'table_open' ? 'table'
+      : token.type === 'html_block' ? 'html'
+      : token.type === 'hr' ? 'thematicBreak' : undefined;
+    if (!type) return undefined;
+    if (token.type !== 'html_block') {
+      // CommonMark excludes a block's optional 1–3 leading spaces from its
+      // start position, while raw HTML retains its indentation.
+      while (start < end && start - starts[first] < 3 && markdown[start] === ' ') start++;
+    }
+    blocks.push({
+      type,
+      start,
+      end,
+      depth: type === 'heading' ? Number(token.tag.slice(1)) : undefined,
+      text: markdown.slice(start, end),
+      referencedRefs: [],
+    });
+  }
+  return blocks;
+}
+
 function parseMarkdownBlocks(markdown: string): StructuralBlock[] {
+  const fast = fastMarkdownBlocks(markdown);
+  if (fast) return fast;
   const tree = markdownParser.parse(markdown);
   const nodes = parsedRootChildren(tree);
   const collectRefs = nodes.some((node) => DEFINITION_TYPES.has(node.type));
@@ -445,14 +517,20 @@ export function parseDocumentSections(markdown: string): DocumentSection[] {
 
 function scoreSections(sections: DocumentSection[], query: string): number[] {
   const scores = sections.map(() => 0);
-  const queryTerms = tokenizeText(query);
-  if (queryTerms.length === 0 || sections.length === 0) return scores;
+  const queryTerms = new Set(tokenizeText(query).map((term) => term.toLowerCase()));
+  if (queryTerms.size === 0 || sections.length === 0) return scores;
 
   const index = new MiniSearch({
     fields: ['heading', 'body'],
     storeFields: ['id'],
     tokenize: tokenizeText,
-    processTerm: (term) => term.toLowerCase(),
+    // With prefix/fuzzy disabled only exact query terms can contribute. MiniSearch
+    // records full field lengths before processTerm filtering, preserving BM25
+    // normalization while avoiding postings for every unrelated page word.
+    processTerm: (term) => {
+      const lower = term.toLowerCase();
+      return queryTerms.has(lower) ? lower : null;
+    },
     searchOptions: searchDefaults,
   });
 

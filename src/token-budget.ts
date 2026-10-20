@@ -1,5 +1,4 @@
-import { Tiktoken } from 'js-tiktoken/lite';
-import o200k_base from 'js-tiktoken/ranks/o200k_base';
+import { countTokens } from 'gpt-tokenizer/esm/encoding/o200k_base';
 
 export const DEFAULT_MAX_TOKENS = 6000;
 export const MIN_MAX_TOKENS = 512;
@@ -18,42 +17,47 @@ export type MaxTokensValidation =
   | { ok: true; max_tokens: number }
   | { ok: false; error: string };
 
-const encoder = new Tiktoken(o200k_base);
+const ordinaryText = {
+  allowedSpecial: new Set<string>(),
+  disallowedSpecial: new Set<string>(),
+};
 
 export function serializeResponseText(value: unknown): string {
   return JSON.stringify(value, null, 2);
 }
 
 export function countResponseTokens(text: string): number {
-  return encoder.encode(text, [], []).length;
+  return countTokens(text, ordinaryText);
 }
 
 export function attachResponseBudget<T extends object>(
   payload: T,
   limit: number,
 ): T & { budget: ResponseBudget } {
-  let used = 0;
-  let packed: T & { budget: ResponseBudget } | undefined;
-
+  const packed = {
+    ...payload,
+    budget: {
+      tokenizer: TOKENIZER_NAME,
+      limit,
+      used: 0,
+      scope: BUDGET_SCOPE,
+    },
+  };
+  const base = countResponseTokens(serializeResponseText(packed));
+  let used = base;
+  // o200k_base isolates decimal number runs from JSON punctuation/whitespace.
+  // Only this numeric field changes, so settle its cost without re-encoding
+  // every evidence section. The final wire guards still count the whole reply.
+  const zeroCost = countResponseTokens('0');
   for (let i = 0; i < 8; i++) {
-    packed = {
-      ...payload,
-      budget: {
-        tokenizer: TOKENIZER_NAME,
-        limit,
-        used,
-        scope: BUDGET_SCOPE,
-      },
-    };
-    const next = countResponseTokens(serializeResponseText(packed));
-    if (next === used) return packed;
+    const next = base - zeroCost + countResponseTokens(String(used));
+    if (next === used) {
+      packed.budget.used = used;
+      return packed;
+    }
     used = next;
   }
-
-  if (!packed) {
-    throw new Error('Failed to attach response budget');
-  }
-  return packed;
+  throw new Error('Failed to stabilize response budget');
 }
 
 const UNTRUSTED_ERROR_KEYS = ['document_id', 'query', 'message', 'title', 'guidance'] as const;

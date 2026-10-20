@@ -43,6 +43,13 @@ describe('token budget counting', () => {
     })));
   });
 
+  it('matches o200k_base reference counts for Unicode whitespace boundaries', () => {
+    // Verified against the Rust/WASM o200k_base encoder with ordinary-text policy.
+    expect(countResponseTokens(' \uFEFFa')).toBe(2);
+    expect(countResponseTokens('a \u0085b')).toBe(5);
+    expect(countResponseTokens('\ud800')).toBe(1);
+  });
+
   it('defaults max_tokens to 6000 and accepts only integers 512..32000', () => {
     expect(validateMaxTokens(undefined)).toEqual({ ok: true, max_tokens: DEFAULT_MAX_TOKENS });
     expect(DEFAULT_MAX_TOKENS).toBe(6000);
