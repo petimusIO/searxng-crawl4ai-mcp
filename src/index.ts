@@ -18,6 +18,7 @@ import { stripMarkdownFromData, ContentMode } from './content-utils.js';
 import { DEFAULT_FOURGET_SCRAPER, FourgetClient } from './fourget-client.js';
 import { discoverUrls } from './url-discovery.js';
 import { buildCacheKey } from './cache-key.js';
+import { DEFAULT_IMAGE_LIMIT, IMAGE_CACHE_PREFIX, imageSearchCacheFields, searchImages } from './image-search.js';
 import { resolveErrorBudget, validateResearchArgs, validateScrapeArgs } from './budget-args.js';
 import { DocumentStore } from './document-store.js';
 import { flattenPackedSource, packBudgetedResponse, packQuickResearch, packSectionIndex } from './response-packer.js';
@@ -68,20 +69,10 @@ export class SearXNGMCPServer {
   // network server state (optional)
   private expressApp?: express.Application;
   private httpServer?: http.Server;
-  private sseSessions = new Map<string, any>();
+  private sseSessions = new Map<string, { transport: any; server: Server }>();
 
   constructor() {
-    this.server = new Server(
-      {
-        name: 'searxng-crw-mcp',
-        version: '3.0.0',
-      },
-      {
-        capabilities: {
-          tools: {},
-        },
-      }
-    );
+    this.server = this.createSdkServer();
 
     // Initialize clients
     this.searxng = new SearXNGClient(process.env.SEARXNG_URL || 'http://localhost:8081');
@@ -120,36 +111,45 @@ export class SearXNGMCPServer {
         return res.status(200).json({ ok: true, searxng: searx, fourget: fourget, crw: crw });
       });
 
-      app.get(['/mcp/sse', '/sse'], async (req, res) => {
+      app.get(['/mcp/sse', '/sse'], async (_req, res) => {
+        let sessionId = '';
         try {
           const { SSEServerTransport } = await import('@modelcontextprotocol/sdk/server/sse.js');
           const endpoint = process.env.MCP_SSE_PATH || '/mcp/sse';
           const transport = new SSEServerTransport(endpoint, res as any);
+          sessionId = String(transport.sessionId);
 
-          // NOTE: do NOT call transport.start() here — Server.connect()
-          // calls start() automatically. Explicit start() + connect()
-          // throws "SSEServerTransport already started!" and kills the
-          // SSE handshake (observed on every GET /sse before this fix).
+          // Each external SSE client gets its own SDK Server. One shared
+          // Server.connect() cannot multiplex independent initialize/tool
+          // sessions. Handlers and provider/cache clients stay on `this`.
+          const sessionServer = this.createSdkServer();
+          this.setupToolHandlers(sessionServer);
 
-          // register the transport for incoming POST messages
-          this.sseSessions.set(String(transport.sessionId), transport);
-
-          transport.onclose = () => {
-            logger.info('mcp:http:sse:closed', { sessionId: transport.sessionId });
-            this.sseSessions.delete(String(transport.sessionId));
+          const dropSession = () => {
+            if (!this.sseSessions.has(sessionId)) return;
+            this.sseSessions.delete(sessionId);
+            logger.info('mcp:http:sse:closed', { sessionId });
+          };
+          sessionServer.onclose = dropSession;
+          sessionServer.onerror = (error) => {
+            logger.error('mcp:http:sse:session-error', { sessionId, message: String(error) });
+            dropSession();
           };
 
-          await this.server.connect(transport);
-          logger.info('mcp:http:sse:connected', { sessionId: transport.sessionId });
+          this.sseSessions.set(sessionId, { transport, server: sessionServer });
+          await sessionServer.connect(transport);
+          logger.info('mcp:http:sse:connected', { sessionId });
         } catch (err) {
+          if (sessionId) this.sseSessions.delete(sessionId);
           logger.error('mcp:http:sse:error', { message: String(err) });
-          res.status(500).end();
+          if (!res.headersSent) res.status(500).end();
         }
       });
 
       app.post(['/mcp/sse', '/sse', '/mcp/sse/:sessionId'], async (req, res) => {
         const sessionId = req.params.sessionId || req.query.sessionId || req.headers['x-session-id'];
-        const transport = sessionId ? this.sseSessions.get(String(sessionId)) : undefined;
+        const session = sessionId ? this.sseSessions.get(String(sessionId)) : undefined;
+        const transport = session?.transport;
         if (!transport) return res.status(404).json({ ok: false, error: 'session not found' });
 
         try {
@@ -174,6 +174,8 @@ export class SearXNGMCPServer {
               return res.json({ ok: true, result: await this.handleScrapeUrl(args) });
             case 'search_and_scrape':
               return res.json({ ok: true, result: await this.handleSearchAndScrape(args) });
+            case 'search_images':
+              return res.json({ ok: true, result: await this.handleSearchImages(args) });
             default:
               return res.status(404).json({ ok: false, error: 'tool not supported via HTTP proxy' });
           }
@@ -416,9 +418,23 @@ export class SearXNGMCPServer {
     return result;
   }
 
+  private createSdkServer() {
+    return new Server(
+      {
+        name: 'searxng-crw-mcp',
+        version: '3.0.0',
+      },
+      {
+        capabilities: {
+          tools: {},
+        },
+      }
+    );
+  }
+
   // ── Tool registration ───────────────────────────────────────────────
-  private setupToolHandlers() {
-    this.server.setRequestHandler(ListToolsRequestSchema, async () => {
+  private setupToolHandlers(target: Server = this.server) {
+    target.setRequestHandler(ListToolsRequestSchema, async () => {
       return {
         tools: [
           {
@@ -453,6 +469,25 @@ export class SearXNGMCPServer {
                   type: 'string',
                   description: 'Search language (en, es, fr, etc.)',
                   default: 'en',
+                },
+              },
+              required: ['query'],
+            },
+          },
+          {
+            name: 'search_images',
+            description: 'Search for relevant web images using 4get DDG first, with SearXNG image fallback. Does not crawl image binaries.',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                query: {
+                  type: 'string',
+                  description: 'The image search query',
+                },
+                maxResults: {
+                  type: 'number',
+                  description: 'Maximum number of images to return (default 6, max 6)',
+                  default: DEFAULT_IMAGE_LIMIT,
                 },
               },
               required: ['query'],
@@ -591,13 +626,15 @@ export class SearXNGMCPServer {
       };
     });
 
-    this.server.setRequestHandler(CallToolRequestSchema, async (request) => {
+    target.setRequestHandler(CallToolRequestSchema, async (request) => {
       const { name, arguments: args } = request.params;
 
       try {
         switch (name) {
           case 'search_web':
             return await this.handleSearchWeb(args);
+          case 'search_images':
+            return await this.handleSearchImages(args);
           case 'research':
             return await this.handleResearch(args);
           case 'scrape_url':
@@ -685,6 +722,48 @@ export class SearXNGMCPServer {
         },
       ],
     };
+
+    await this.cache.set(cacheKey, response, SEARCH_CACHE_TTL_MS);
+    return response;
+  }
+
+  /**
+   * Image search via 4get DDG primary with SearXNG image fallback.
+   * Separate from text URL discovery. Never crawls image binaries.
+   */
+  private async handleSearchImages(args: any) {
+    const query = String(args?.query || '').trim();
+    const scraper = args.scraper || DEFAULT_FOURGET_SCRAPER;
+    const maxResults = Math.min(Number(args?.maxResults) || DEFAULT_IMAGE_LIMIT, DEFAULT_IMAGE_LIMIT);
+
+    const cacheKey = buildCacheKey(IMAGE_CACHE_PREFIX, imageSearchCacheFields({
+      query,
+      nsfw: 'no',
+      scraper,
+      maxResults,
+    }));
+    const cached = await this.cache.get(cacheKey);
+    if (cached) return cached;
+
+    const discovery = await searchImages({
+      query,
+      fourget: this.fourget,
+      searxng: this.searxng,
+      maxResults,
+      scraper,
+      fourgetTimeoutMs: 1_500,
+      fallbackTimeoutMs: 1_500,
+    });
+
+    const response = this.mcpJson({
+      query,
+      total_results: discovery.images.length,
+      images: discovery.images,
+      engine_info: {
+        route: discovery.route,
+        fallback_reason: discovery.fallbackReason,
+      },
+    });
 
     await this.cache.set(cacheKey, response, SEARCH_CACHE_TTL_MS);
     return response;

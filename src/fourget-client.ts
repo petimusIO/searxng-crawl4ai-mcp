@@ -40,6 +40,21 @@ export interface FourgetSearchResponse {
   npt: string;
 }
 
+export interface FourgetImageSearchOptions {
+  scraper?: string;
+  nsfw?: string;
+  timeoutMs?: number;
+}
+
+export interface FourgetImageSearchResponse {
+  status: string;
+  image: Array<{
+    title?: string;
+    url?: string;
+    source?: Array<{ url?: string; width?: number; height?: number }>;
+  }>;
+}
+
 /**
  * Flatten 4get's rich description array into a plain text string.
  * Live 4get may return a plain string; existing callers also send
@@ -113,6 +128,42 @@ export class FourgetClient {
       };
     } catch (error) {
       logger.error(`4get search error for "${query}":`, error);
+      throw error;
+    }
+  }
+
+  async searchImages(
+    query: string,
+    options: FourgetImageSearchOptions = {},
+  ): Promise<FourgetImageSearchResponse> {
+    const scraper = options.scraper || DEFAULT_FOURGET_SCRAPER;
+    const timeoutMs = options.timeoutMs ?? 2500;
+
+    try {
+      logger.info(`Searching 4get images: ${query} (scraper=${scraper})`);
+
+      const response = await axios.get<{ status?: string; image?: FourgetImageSearchResponse['image'] }>(
+        `${this.baseUrl}/api/v1/images`,
+        {
+          params: {
+            s: query,
+            scraper,
+            nsfw: 'no',
+          },
+          headers: {
+            'Accept': 'application/json',
+            'User-Agent': 'SearXNG-CRW-MCP/3.0',
+          },
+          timeout: timeoutMs,
+        },
+      );
+
+      return {
+        status: response.data.status || 'ok',
+        image: response.data.image || [],
+      };
+    } catch (error) {
+      logger.error(`4get image search error for "${query}":`, error);
       throw error;
     }
   }

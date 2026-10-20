@@ -14,7 +14,7 @@ describe('4get default scraper contract', () => {
   });
 
   it('uses the shared DDG default in every server path', () => {
-    expect(indexSource.match(/DEFAULT_FOURGET_SCRAPER/g)).toHaveLength(6);
+    expect(indexSource.match(/DEFAULT_FOURGET_SCRAPER/g)).toHaveLength(7);
   });
 
   it('routes all server discovery through the primary-fallback helper', () => {
@@ -36,7 +36,7 @@ describe('4get default scraper contract', () => {
       'buildCacheKey(RESEARCH_CACHE_PREFIX, [',
     ];
 
-    expect(indexSource.match(/const cacheKey = buildCacheKey\(/g)).toHaveLength(3);
+    expect(indexSource.match(/const cacheKey = buildCacheKey\(/g)).toHaveLength(4);
     for (const marker of markers) {
       const start = indexSource.indexOf(marker);
       expect(start).toBeGreaterThan(-1);
