@@ -109,8 +109,7 @@ export function responseTimingStatus(response: any): Status {
     if (body.error === 'invalid_arguments') return 'validation_error';
     if (body.error || body.success === false) return 'error';
     if (body.fetch?.outcome) return body.fetch.outcome === 'degraded' ? 'partial' : 'error';
-    if (body.research_metadata?.errors?.length || body.engine_info?.route === 'fourget-partial'
-      || body.research_metadata?.discovery_route === 'fourget-partial') return 'partial';
+    if (body.engine_info?.route === 'fourget-partial') return 'partial';
     if (body.engine_info?.route === 'empty') return 'error';
   } catch { /* Do not change response validation or bytes. */ }
   return 'success';
@@ -127,7 +126,7 @@ export function withSearchTiming<T>(meta: unknown, tool: string, work: () => Pro
   }
   const context: TimingContext = {
     ids, origin: performance.now(), wallOrigin: Date.now(), cached: false,
-    tool: ['research', 'search_web', 'scrape_url', 'search_images', 'search_and_scrape'].includes(tool) ? tool : 'unknown',
+    tool: ['websearch', 'webfetch'].includes(tool) ? tool : 'unknown',
   };
   return timing.run(context, () => timedAsync('mcp.request.total', work, responseTimingStatus, true));
 }

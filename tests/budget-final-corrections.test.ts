@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { DocumentStore } from '../src/document-store.js';
-import { SearXNGMCPServer } from '../src/index.js';
+import { WebFetchTool } from '../src/tools/webfetch.js';
 import { parseDocumentSections } from '../src/passage-extractor.js';
 import { countResponseTokens, prepareSafeErrorPayload } from '../src/token-budget.js';
 
@@ -26,7 +26,7 @@ function scrapeOk(url: string, markdown: string, title = 'Docs') {
 }
 
 function createHarness(scrape?: (url: string) => Promise<unknown> | unknown) {
-  const server = Object.create(SearXNGMCPServer.prototype) as any;
+  const server = Object.create(WebFetchTool.prototype) as any;
   const cache = new Map<string, unknown>();
   let scrapeCalls = 0;
   let scrapeImpl = scrape ?? (async (url: string) => scrapeOk(url, '## Page\n\nHello.'));
@@ -92,7 +92,7 @@ describe('CORRECTNESS1 bounded upstream scrape errors', () => {
       error: 'blocked '.repeat(2000),
     }));
 
-    const result = decode(await harness.server.handleScrapeUrl({
+    const result = decode(await harness.server.handle({
       url: 'https://blocked.test/page',
       max_tokens: 512,
     }));
@@ -114,7 +114,7 @@ describe('CORRECTNESS1 bounded upstream scrape errors', () => {
       url: 'https://blocked.test/short',
       error: 'blocked',
     }));
-    const short = decode(await harness.server.handleScrapeUrl({
+    const short = decode(await harness.server.handle({
       url: 'https://blocked.test/short',
       max_tokens: 512,
     }));
@@ -126,7 +126,7 @@ describe('CORRECTNESS1 bounded upstream scrape errors', () => {
       url: 'https://blocked.test/arbitrary',
       error: `??? ${'Q'.repeat(3000)} unexpected crawler dump`,
     }));
-    const arbitrary = decode(await harness.server.handleScrapeUrl({
+    const arbitrary = decode(await harness.server.handle({
       url: 'https://blocked.test/arbitrary',
       max_tokens: 512,
     }));
@@ -142,7 +142,7 @@ describe('CORRECTNESS1 bounded upstream scrape errors', () => {
     harness.setScrape(async () => {
       throw new Error(`thrown dump ${'E'.repeat(400)}`);
     });
-    const thrown = decode(await harness.server.handleScrapeUrl({
+    const thrown = decode(await harness.server.handle({
       url: 'https://blocked.test/thrown',
       max_tokens: 512,
     }));
@@ -158,7 +158,7 @@ describe('CORRECTNESS2 canonical snapshot body and metadata', () => {
   const NEW = '## New\n\nReplacement evidence.';
 
   it('packScrapedDocument full mode uses retained snapshot markdown and metadata, not fresh scrape data', () => {
-    const server = Object.create(SearXNGMCPServer.prototype) as any;
+    const server = Object.create(WebFetchTool.prototype) as any;
     server.documentStore = new DocumentStore();
     const retained = server.retainDocument('https://same.test/page', 'Old', OLD);
     const packed = decode(server.packScrapedDocument(
@@ -190,41 +190,25 @@ describe('CORRECTNESS2 canonical snapshot body and metadata', () => {
     expect(packed.body.budget.used).toBe(countResponseTokens(packed.text));
   });
 
-  it('handleNormalResearch and a later saved full read both return the retained body', async () => {
+  it('webfetch and a later saved full read both return the retained body', async () => {
     const harness = createHarness();
     const retained = harness.server.retainDocument('https://example.com/docs', 'Old', OLD);
     harness.setScrape(async (url: string) => scrapeOk(url, NEW, 'New'));
 
-    const research = decode(await harness.server.handleNormalResearch(
-      'Original evidence',
-      'single',
-      [{ url: 'https://example.com/docs', title: 'New', content: 'discovery snippet' }],
-      'full',
-      undefined,
-      1,
-      [],
-      Date.now(),
-      'research:canonical-final',
-      'fourget',
-      undefined,
-      6000,
-    ));
+    const fetched = decode(await harness.server.handle({ url: 'https://example.com/docs', content_mode: 'full' }));
+    expect(fetched.body.document_id).toBe(retained.document_id);
+    expect(fetched.body.data.markdown).toBe(OLD);
+    expect(fetched.body.data.metadata.title).toBe('Old');
 
-    expect(research.body.results[0].document_id).toBe(retained.document_id);
-    expect(research.body.results[0].data.markdown).toBe(OLD);
-    expect(research.body.results[0].data.metadata?.title).toBe('Old');
-    expect(research.body.results[0].data.metadata?.description).toBeUndefined();
-    expect(research.body.results[0].title).toBe('Old');
-
-    const saved = decode(await harness.server.handleScrapeUrl({
+    const saved = decode(await harness.server.handle({
       document_id: retained.document_id,
       content_mode: 'full',
       max_tokens: 6000,
     }));
     expect(saved.body.data.markdown).toBe(OLD);
-    expect(saved.body.data.markdown).toBe(research.body.results[0].data.markdown);
+    expect(saved.body.data.markdown).toBe(fetched.body.data.markdown);
     expect(saved.body.document_id).toBe(retained.document_id);
-    expect(harness.scrapeCalls).toBe(1);
+    expect(harness.scrapeCalls).toBe(0);
   });
 });
 
@@ -248,7 +232,7 @@ describe('CORRECTNESS3 reserved requested section outcomes', () => {
   it('mixed small+large requested ids keep s0 evidence and a required s1 outcome at 512', async () => {
     const harness = createHarness();
     const document = await savedMixed(harness);
-    const result = decode(await harness.server.handleScrapeUrl({
+    const result = decode(await harness.server.handle({
       document_id: document.document_id,
       section_ids: ['s0', 's1'],
       max_tokens: 512,
@@ -275,7 +259,7 @@ describe('CORRECTNESS3 reserved requested section outcomes', () => {
   it('reverse requested order still reports the oversized section after flatten', async () => {
     const harness = createHarness();
     const document = await savedMixed(harness);
-    const result = decode(await harness.server.handleScrapeUrl({
+    const result = decode(await harness.server.handle({
       document_id: document.document_id,
       section_ids: ['s1', 's0'],
       max_tokens: 512,
@@ -308,7 +292,7 @@ describe('CORRECTNESS3 reserved requested section outcomes', () => {
     expect(saved.ok).toBe(true);
     if (!saved.ok) return;
 
-    const result = decode(await harness.server.handleScrapeUrl({
+    const result = decode(await harness.server.handle({
       document_id: saved.document.document_id,
       section_ids: sections.map((section: { id: string }) => section.id),
       max_tokens: 512,

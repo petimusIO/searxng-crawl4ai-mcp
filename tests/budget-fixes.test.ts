@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { DocumentStore } from '../src/document-store.js';
-import { SearXNGMCPServer } from '../src/index.js';
+import { WebFetchTool } from '../src/tools/webfetch.js';
 import {
   parseDocumentSections,
   rankDocumentSections,
@@ -52,7 +52,7 @@ function scrapeOk(url: string, markdown: string) {
 }
 
 function createHarness(scrape?: (url: string) => Promise<unknown> | unknown) {
-  const server = Object.create(SearXNGMCPServer.prototype) as any;
+  const server = Object.create(WebFetchTool.prototype) as any;
   const cache = new Map<string, unknown>();
   let scrapeCalls = 0;
   let scrapeImpl = scrape ?? (async (url: string) => scrapeOk(url, fixturePage(0)));
@@ -157,11 +157,11 @@ describe('1 hard cap and compact errors', () => {
   it('compacts attacker-sized ids and uses a valid supplied budget for invalid arguments', async () => {
     const harness = createHarness();
     const huge = `id-${'x'.repeat(4000)}`;
-    const unavailable = decode(await harness.server.handleScrapeUrl({
+    const unavailable = decode(await harness.server.handle({
       document_id: huge,
       max_tokens: 800,
     }));
-    const invalid = decode(await harness.server.handleScrapeUrl({
+    const invalid = decode(await harness.server.handle({
       url: 'https://example.com/docs',
       document_id: huge,
       max_tokens: 800,
@@ -192,7 +192,7 @@ describe('2 failed direct scrape is not retained', () => {
       },
     }));
 
-    const first = decode(await harness.server.handleScrapeUrl({
+    const first = decode(await harness.server.handle({
       url: 'https://blocked.test/page',
     }));
     expect(first.body.success).toBe(false);
@@ -201,7 +201,7 @@ describe('2 failed direct scrape is not retained', () => {
     expect(harness.scrapeCalls).toBe(1);
 
     harness.setScrape(async (url: string) => scrapeOk(url, '## Recovered\n\nNow the page works.'));
-    const second = decode(await harness.server.handleScrapeUrl({
+    const second = decode(await harness.server.handle({
       url: 'https://blocked.test/page',
     }));
     expect(second.body.success).toBe(true);
@@ -213,7 +213,7 @@ describe('2 failed direct scrape is not retained', () => {
     const harness = createHarness(async () => {
       throw new Error(`upstream exploded ${'E'.repeat(400)}`);
     });
-    const result = decode(await harness.server.handleScrapeUrl({
+    const result = decode(await harness.server.handle({
       url: 'https://example.com/docs',
       max_tokens: 6000,
     }));
@@ -227,7 +227,7 @@ describe('2 failed direct scrape is not retained', () => {
 
 describe('3 canonical snapshot', () => {
   it('returns the stored snapshot instead of mixing a new body with an old id', () => {
-    const server = Object.create(SearXNGMCPServer.prototype) as any;
+    const server = Object.create(WebFetchTool.prototype) as any;
     server.documentStore = new DocumentStore();
     const first = server.retainDocument(
       'https://same.test/page',
@@ -323,47 +323,13 @@ describe('4 store immutability, capacity, and handle eviction', () => {
     }).ok).toBe(false);
   });
 
-  it('does not advertise evicted handles after multi-source retention', async () => {
-    const harness = createHarness();
-    harness.server.documentStore = new DocumentStore({ maxDocuments: 1, maxBytes: 32 * 1024 * 1024 });
-    harness.server.fourget = {
-      search: async () => ({
-        status: 'ok',
-        web: [
-          { title: 'A', url: 'https://example.com/a', description: 'policy requirements', date: null, type: 'web' },
-          { title: 'B', url: 'https://example.com/b', description: 'policy exceptions', date: null, type: 'web' },
-        ],
-        answer: [],
-        npt: '',
-      }),
-    };
-    harness.setScrape(async (url: string) => scrapeOk(url, fixturePage(url.endsWith('/b') ? 1 : 0)));
 
-    const result = decode(await harness.server.handleResearch({
-      query: 'policy requirements exceptions',
-      depth: 'normal',
-      breadth: 'multi',
-    }));
-    const ids = (result.body.results ?? [])
-      .map((row: { document_id?: string }) => row.document_id)
-      .filter((id: unknown): id is string => typeof id === 'string');
-    for (const id of ids) {
-      expect(harness.server.documentStore.has(id)).toBe(true);
-    }
-    const advertisedMissing = (result.body.results ?? []).filter((row: { document_id?: string; read_more_unavailable?: boolean }) => (
-      row.document_id && !harness.server.documentStore.has(row.document_id)
-    ));
-    expect(advertisedMissing).toEqual([]);
-    expect(result.body.results.some((row: { read_more_unavailable?: boolean; document_id?: string }) => (
-      row.read_more_unavailable && !row.document_id
-    ))).toBe(true);
-  });
 });
 
 describe('5 selectors on first URL and argument rejection', () => {
   it('honors list_sections on the first URL scrape', async () => {
     const harness = createHarness(async (url: string) => scrapeOk(url, fixturePage(0)));
-    const page = decode(await harness.server.handleScrapeUrl({
+    const page = decode(await harness.server.handle({
       url: 'https://example.com/first',
       list_sections: true,
       max_tokens: 2000,
@@ -378,30 +344,30 @@ describe('5 selectors on first URL and argument rejection', () => {
 
   it('rejects duplicate section_ids, malformed urls, fetch-only params on doc ids, and past-end offsets', async () => {
     const harness = createHarness(async (url: string) => scrapeOk(url, fixturePage(0)));
-    const first = decode(await harness.server.handleScrapeUrl({
+    const first = decode(await harness.server.handle({
       url: 'https://example.com/docs',
     }));
     const id = first.body.document_id;
 
-    const dup = decode(await harness.server.handleScrapeUrl({
+    const dup = decode(await harness.server.handle({
       document_id: id,
       section_ids: ['s0', 's0'],
     }));
-    const badUrl = decode(await harness.server.handleScrapeUrl({
+    const badUrl = decode(await harness.server.handle({
       url: 'javascript:alert(1)',
     }));
-    const ftp = decode(await harness.server.handleScrapeUrl({
+    const ftp = decode(await harness.server.handle({
       url: 'ftp://example.com/file',
     }));
-    const fetchOnId = decode(await harness.server.handleScrapeUrl({
+    const fetchOnId = decode(await harness.server.handle({
       document_id: id,
       timeout: 5000,
     }));
-    const badTimeout = decode(await harness.server.handleScrapeUrl({
+    const badTimeout = decode(await harness.server.handle({
       url: 'https://example.com/other',
       timeout: 'fast',
     }));
-    const pastEnd = decode(await harness.server.handleScrapeUrl({
+    const pastEnd = decode(await harness.server.handle({
       document_id: id,
       list_sections: true,
       section_offset: 99,
@@ -414,63 +380,6 @@ describe('5 selectors on first URL and argument rejection', () => {
     expect(badTimeout.body.error).toBe('invalid_arguments');
     expect(pastEnd.body.error).toBe('invalid_arguments');
     expect(harness.scrapeCalls).toBe(1);
-  });
-});
-
-describe('6 depth budget', () => {
-  it('caps quick snippets, deep unimplemented, and zero-result envelopes', async () => {
-    const harness = createHarness();
-    harness.server.fourget = {
-      search: async () => ({
-        status: 'ok',
-        web: [{
-          title: 'Quick',
-          url: 'https://example.com/quick',
-          description: words(1000),
-          date: null,
-          type: 'web',
-        }],
-        answer: [],
-        npt: '',
-      }),
-    };
-
-    const quick = decode(await harness.server.handleResearch({
-      query: 'policy',
-      depth: 'quick',
-      max_tokens: 512,
-    }));
-    expect(quick.body.research_metadata?.depth).toBe('quick');
-    expect(quick.body.budget.used).toBe(countResponseTokens(quick.text));
-    expect(quick.body.budget.used).toBeLessThanOrEqual(512);
-    expect(quick.body.budget.limit).toBe(512);
-    expect(harness.scrapeCalls).toBe(0);
-    if (quick.body.results?.[0]?.snippet) {
-      expect(quick.body.results[0].snippet).toBe(words(1000));
-    } else {
-      expect(quick.body.error === 'budget_too_small' || quick.body.omitted_snippets > 0).toBe(true);
-    }
-
-    const deep = decode(await harness.server.handleResearch({
-      query: words(1000),
-      depth: 'deep',
-      max_tokens: 512,
-    }));
-    expect(deep.body.error).toMatch(/not yet implemented/i);
-    expect(deep.body.budget.used).toBeLessThanOrEqual(512);
-    expect(deep.body.budget.limit).toBe(512);
-
-    harness.server.fourget = {
-      search: async () => ({ status: 'ok', web: [], answer: [], npt: '' }),
-    };
-    const empty = decode(await harness.server.handleResearch({
-      query: words(1000),
-      depth: 'normal',
-      max_tokens: 512,
-    }));
-    expect(empty.body.number_of_results).toBe(0);
-    expect(empty.body.budget.used).toBeLessThanOrEqual(512);
-    expect(harness.scrapeCalls).toBe(0);
   });
 });
 

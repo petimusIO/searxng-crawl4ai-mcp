@@ -1,4 +1,4 @@
-FROM searxng/searxng:latest
+FROM searxng/searxng@sha256:5ed0323b5f5f8701264ef65e239a2bd83cb57098f2b971fa30bf79c06eeae271
 
 # Include the repository settings.yml into the image so the container
 # does not require a host bind-mount at /etc/searxng/settings.yml.

@@ -1,60 +1,23 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 
-const indexSource = readFileSync(new URL('../src/index.ts', import.meta.url), 'utf8');
+const handler = readFileSync(new URL('../src/tools/websearch.ts', import.meta.url), 'utf8');
+const server = readFileSync(new URL('../src/server.ts', import.meta.url), 'utf8');
 
-describe('4get default scraper contract', () => {
-  it('does not default any server path to blocked Brave', () => {
-    expect(indexSource).not.toContain("args.scraper || 'brave'");
-    expect(indexSource).not.toContain('Default: "brave"');
+describe('4get websearch defaults and cache identity', () => {
+  it('retains distinct DDG web/image and news defaults without blocked Brave or unsupported Bing defaults', () => {
+    expect(handler).toContain('const scraper = args.scraper || DEFAULT_FOURGET_SCRAPER;');
+    expect(handler).toContain('news ? DEFAULT_FOURGET_NEWS_SCRAPER : DEFAULT_FOURGET_SCRAPER');
+    expect(handler).not.toContain("args.scraper || 'brave'");
+    expect(server).not.toContain('Default: "brave"');
+    expect(server).not.toContain('"brave", "google", "bing"');
   });
 
-  it('does not advertise unsupported Bing as a 4get scraper', () => {
-    expect(indexSource).not.toContain('"brave", "google", "bing"');
-  });
-
-  it('keeps web/image DDG defaults separate from the news default', () => {
-    expect(indexSource).toContain('const scraper = args.scraper || DEFAULT_FOURGET_SCRAPER;');
-    expect(indexSource).toContain('news ? DEFAULT_FOURGET_NEWS_SCRAPER : DEFAULT_FOURGET_SCRAPER');
-  });
-
-  it('routes all server discovery through the primary-fallback helper', () => {
-    expect(indexSource.match(/await discoverUrls\(/g)).toHaveLength(3);
-    expect(indexSource).not.toContain('const [searxngSettled, fourgetSettled]');
-  });
-
-  it('describes and caches the primary-fallback strategy accurately', () => {
-    expect(indexSource).toContain('Search the web using 4get with SearXNG fallback');
-    expect(indexSource).not.toContain('search:merged:');
-    expect(indexSource).toContain("const RESEARCH_CACHE_PREFIX        = 'research:v6'");
-    expect(indexSource).toContain("buildCacheKey('search_and_scrape:v4'");
-  });
-
-  it('uses structured keys and isolates every discovery cache by scraper', () => {
-    const markers = [
-      "buildCacheKey('search:primary-fallback:v2', [",
-      "buildCacheKey('search_and_scrape:v4', [",
-      'buildCacheKey(RESEARCH_CACHE_PREFIX, [',
-    ];
-
-    expect(indexSource.match(/const cacheKey = buildCacheKey\(/g)).toHaveLength(4);
-    for (const marker of markers) {
-      const start = indexSource.indexOf(marker);
-      expect(start).toBeGreaterThan(-1);
-      const end = indexSource.indexOf(']);', start);
-      expect(indexSource.slice(start, end)).toContain('scraper');
-    }
-  });
-
-  it('reports discovery metadata when legacy search returns no results', () => {
-    expect(indexSource).toMatch(
-      /search_results:\s*0,\s*discovery_route:\s*discovery\.route,\s*fallback_reason:\s*discovery\.fallbackReason,/,
-    );
-  });
-
-  it('isolates search_web cache entries by result limit', () => {
-    const start = indexSource.indexOf("buildCacheKey('search:primary-fallback:v2', [");
-    const end = indexSource.indexOf(']);', start);
-    expect(indexSource.slice(start, end)).toContain('limit');
+  it('has one text-discovery path and isolates search by scraper, limit and budget', () => {
+    expect(handler.match(/await discoverUrls\(/g)).toHaveLength(1);
+    const start = handler.indexOf("buildCacheKey('websearch:v1', [");
+    const key = handler.slice(start, handler.indexOf(']);', start));
+    for (const field of ['scraper', 'limit', 'args.max_tokens', 'categories', 'engines', 'language']) expect(key).toContain(field);
+    expect(server).toContain('Search snippets using 4get with SearXNG fallback');
   });
 });

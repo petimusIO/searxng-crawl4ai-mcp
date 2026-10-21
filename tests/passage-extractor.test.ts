@@ -2,7 +2,14 @@ import remarkGfm from 'remark-gfm';
 import remarkParse from 'remark-parse';
 import { unified } from 'unified';
 import { describe, it, expect } from 'vitest';
-import { extractRelevantPassages, preprocessText } from '../src/passage-extractor.js';
+import { parseDocumentSections, rankDocumentSections, preprocessText } from '../src/passage-extractor.js';
+
+
+// Join real parser and ranker output for assertions, without selecting or expanding sections.
+function inspectSections(markdown: string, query: string) {
+  const sections = parseDocumentSections(markdown);
+  return { query, total_passages: sections.length, passages: rankDocumentSections(sections, query).map(rank => ({ ...sections[rank.position], ...rank })) };
+}
 
 const markdownParser = unified().use(remarkParse).use(remarkGfm).freeze();
 
@@ -85,7 +92,7 @@ describe('preprocessText', () => {
   });
 });
 
-describe('extractRelevantPassages', () => {
+describe('inspectSections', () => {
   const markdown = [
     'Fastify is a fast and low-overhead web framework for Node.js.',
     'TypeScript adds static type checking to JavaScript.',
@@ -96,47 +103,37 @@ describe('extractRelevantPassages', () => {
   ].join('\n\n');
 
   it('should return passages relevant to the query', () => {
-    const result = extractRelevantPassages(markdown, 'fastify server setup', { topN: 3 });
+    const result = inspectSections(markdown, 'fastify server setup');
 
     expect(result.query).toBe('fastify server setup');
     expect(result.total_passages).toBe(6);
-    expect(result.passages.length).toBeLessThanOrEqual(3);
+    expect(result.passages).toHaveLength(6);
     // The most relevant passages should mention Fastify + setup concepts
     const texts = result.passages.map(p => p.text.toLowerCase());
     expect(texts.some(t => t.includes('fastify'))).toBe(true);
   });
 
   it('should return lowest-scoring passages when query has no overlap', () => {
-    const result = extractRelevantPassages(markdown, 'quantum computing', { topN: 3 });
+    const result = inspectSections(markdown, 'quantum computing');
     // All passages have zero overlap with the query, so topN are returned
     // with whatever scores BM25 assigns (likely very low or zero)
-    expect(result.passages.length).toBe(3);
+    expect(result.passages).toHaveLength(6);
     expect(result.total_passages).toBe(6);
   });
 
-  it('should respect topN limit', () => {
-    const result = extractRelevantPassages(markdown, 'fastify', { topN: 2 });
-    expect(result.passages.length).toBe(2);
-  });
+
 
   it('should handle empty markdown', () => {
-    const result = extractRelevantPassages('', 'anything', { topN: 5 });
+    const result = inspectSections('', 'anything');
     expect(result.total_passages).toBe(0);
     expect(result.passages).toEqual([]);
   });
 
-  it('should include surrounding context paragraphs', () => {
-    const result = extractRelevantPassages(markdown, 'fastify', {
-      topN: 5,
-      contextWindow: 1,
-    });
-    // Should include paragraphs adjacent to the highest-scoring ones
-    expect(result.passages.length).toBeGreaterThan(0);
-  });
+
 
   it('should score single-word paragraphs proportionally', () => {
     const singleWord = 'Fastify\n\nunrelated\n\nFastify\n\nunrelated\n\nfastify';
-    const result = extractRelevantPassages(singleWord, 'fastify', { topN: 5 });
+    const result = inspectSections(singleWord, 'fastify');
     // The three 'Fastify' paragraphs should have highest scores
     const fastifyPassages = result.passages.filter(p =>
       p.text.toLowerCase().includes('fastify')
@@ -200,9 +197,9 @@ const INDENTED_CODE = [
   '        return 1',
 ].join('\n');
 
-describe('extractRelevantPassages structural grouping', () => {
+describe('inspectSections structural grouping', () => {
   it('keeps heading, explanation, fenced code with blank lines, and qualification together', () => {
-    const result = extractRelevantPassages(FENCED_INSTALL, '', { topN: 5 });
+    const result = inspectSections(FENCED_INSTALL, '');
 
     expect(result.total_passages).toBe(1);
     expect(result.passages).toHaveLength(1);
@@ -212,7 +209,7 @@ describe('extractRelevantPassages structural grouping', () => {
   });
 
   it('keeps a GFM table intact with its heading and explanation', () => {
-    const result = extractRelevantPassages(GFM_TABLE, '', { topN: 5 });
+    const result = inspectSections(GFM_TABLE, '');
 
     expect(result.total_passages).toBe(1);
     expect(result.passages[0].text).toBe(GFM_TABLE);
@@ -221,7 +218,7 @@ describe('extractRelevantPassages structural grouping', () => {
   });
 
   it('keeps a nested list intact with its heading', () => {
-    const result = extractRelevantPassages(NESTED_LIST, '', { topN: 5 });
+    const result = inspectSections(NESTED_LIST, '');
 
     expect(result.total_passages).toBe(1);
     expect(result.passages[0].text).toContain('- parent\n  - child a\n  - child b\n- sibling');
@@ -229,7 +226,7 @@ describe('extractRelevantPassages structural grouping', () => {
   });
 
   it('keeps indented code intact with its heading and explanation', () => {
-    const result = extractRelevantPassages(INDENTED_CODE, '', { topN: 5 });
+    const result = inspectSections(INDENTED_CODE, '');
 
     expect(result.total_passages).toBe(1);
     expect(result.passages[0].text).toContain('    def read_csv():\n        return 1');
@@ -247,7 +244,7 @@ describe('extractRelevantPassages structural grouping', () => {
       'Second body mentions oranges.',
     ].join('\n');
 
-    const result = extractRelevantPassages(markdown, '', { topN: 5 });
+    const result = inspectSections(markdown, '');
 
     expect(result.total_passages).toBe(2);
     expect(result.passages[0].text).toContain('## First');
@@ -261,7 +258,7 @@ describe('extractRelevantPassages structural grouping', () => {
 
   it('keeps headerless plain paragraphs as individual passages', () => {
     const markdown = 'Para one about cats.\n\nPara two about dogs.';
-    const result = extractRelevantPassages(markdown, '', { topN: 5 });
+    const result = inspectSections(markdown, '');
 
     expect(result.total_passages).toBe(2);
     expect(result.passages.map((p) => p.text)).toEqual([
@@ -279,7 +276,7 @@ describe('extractRelevantPassages structural grouping', () => {
       '```',
     ].join('\n');
 
-    const result = extractRelevantPassages(markdown, '', { topN: 5 });
+    const result = inspectSections(markdown, '');
 
     expect(result.total_passages).toBe(1);
     expect(result.passages[0].text).toBe(markdown);
@@ -300,7 +297,7 @@ describe('extractRelevantPassages structural grouping', () => {
       'Linux notes.',
     ].join('\n');
 
-    const result = extractRelevantPassages(markdown, '', { topN: 5 });
+    const result = inspectSections(markdown, '');
 
     expect(result.total_passages).toBe(3);
     expect(result.passages[0].heading).toBe('Guide');
@@ -332,7 +329,7 @@ describe('extractRelevantPassages structural grouping', () => {
       'Paragraph four about future.',
     ].join('\n');
 
-    const result = extractRelevantPassages(markdown, '', { topN: 5 });
+    const result = inspectSections(markdown, '');
 
     expect(result.total_passages).toBe(1);
     expect(result.passages[0].text).toBe(markdown);
@@ -353,7 +350,7 @@ describe('extractRelevantPassages structural grouping', () => {
       block('Fourth'),
     ].join('\n');
 
-    const result = extractRelevantPassages(markdown, '', { topN: 8 });
+    const result = inspectSections(markdown, '');
 
     expect(result.total_passages).toBeGreaterThan(1);
     expect(result.passages[0].text).toContain('## Long History');
@@ -380,7 +377,7 @@ describe('extractRelevantPassages structural grouping', () => {
       'Tail paragraph two also stays with the continuation.',
     ].join('\n');
 
-    const result = extractRelevantPassages(markdown, '', { topN: 8 });
+    const result = inspectSections(markdown, '');
     const tails = result.passages.filter((p) => (
       p.text.includes('Tail paragraph one') || p.text.includes('Tail paragraph two')
     ));
@@ -397,7 +394,7 @@ describe('extractRelevantPassages structural grouping', () => {
   it('does not truncate a single giant AST node that exceeds the soft target', () => {
     const giant = `Giant ${'word '.repeat(1200).trim()}.`;
     const markdown = `## Giant\n\n${giant}`;
-    const result = extractRelevantPassages(markdown, '', { topN: 3 });
+    const result = inspectSections(markdown, '');
 
     expect(result.total_passages).toBe(1);
     expect(result.passages[0].text).toContain(giant);
@@ -418,7 +415,7 @@ describe('extractRelevantPassages structural grouping', () => {
       'Next body.',
     ].join('\n');
 
-    const result = extractRelevantPassages(markdown, '', { topN: 5 });
+    const result = inspectSections(markdown, '');
 
     expect(result.passages.some((p) => /^(#{1,6}\s+[^\n]+)\s*$/.test(p.text))).toBe(false);
     expect(result.passages[0].text).toContain('# Documentation');
@@ -431,7 +428,7 @@ describe('extractRelevantPassages structural grouping', () => {
 
   it('exposes source offsets that slice the original markdown', () => {
     const markdown = 'Intro para.\n\n## Target\n\nTarget body.';
-    const result = extractRelevantPassages(markdown, '', { topN: 5 });
+    const result = inspectSections(markdown, '');
 
     expect(result.total_passages).toBe(2);
     const target = result.passages.find((p) => p.text.includes('## Target'));
@@ -444,7 +441,7 @@ describe('extractRelevantPassages structural grouping', () => {
 
   it('attaches a referenced link definition to the selected text', () => {
     const markdown = 'See the [docs][ref].\n\n[ref]: https://example.com/docs';
-    const result = extractRelevantPassages(markdown, '', { topN: 5 });
+    const result = inspectSections(markdown, '');
     const passage = result.passages.find((p) => p.text.includes('See the [docs][ref].'));
 
     expect(passage).toBeDefined();
@@ -463,10 +460,10 @@ describe('extractRelevantPassages structural grouping', () => {
   });
 });
 
-describe('extractRelevantPassages lexical ranking', () => {
+describe('inspectSections lexical ranking', () => {
   it('ranks whole token air above chair', () => {
     const markdown = 'Sit on the chair.\n\nFresh air outside.';
-    const result = extractRelevantPassages(markdown, 'air', { topN: 2 });
+    const result = inspectSections(markdown, 'air');
 
     expect(result.passages[0].text).toContain('Fresh air');
     expect(result.passages[0].score).toBeGreaterThan(result.passages.find((p) => p.text.includes('chair'))?.score ?? -1);
@@ -478,7 +475,7 @@ describe('extractRelevantPassages lexical ranking', () => {
       '',
       'Use Node.js 20 for the server runtime.',
     ].join('\n');
-    const result = extractRelevantPassages(markdown, 'Node.js', { topN: 1 });
+    const result = inspectSections(markdown, 'Node.js');
 
     expect(result.passages[0].text).toContain('Node.js 20');
     expect(result.passages[0].score).toBeGreaterThan(0);
@@ -486,7 +483,7 @@ describe('extractRelevantPassages lexical ranking', () => {
 
   it('ranks read_csv above a split read csv phrase', () => {
     const markdown = 'Please read csv files by hand.\n\nCall read_csv on the path.';
-    const result = extractRelevantPassages(markdown, 'read_csv', { topN: 1 });
+    const result = inspectSections(markdown, 'read_csv');
 
     expect(result.passages[0].text).toContain('read_csv');
     expect(result.passages[0].score).toBeGreaterThan(0);
@@ -494,7 +491,7 @@ describe('extractRelevantPassages lexical ranking', () => {
 
   it('ranks a non-Latin Tokyo query without stripping the script', () => {
     const markdown = 'Paris is in France.\n\n東京は日本の首都です。';
-    const result = extractRelevantPassages(markdown, '東京', { topN: 1 });
+    const result = inspectSections(markdown, '東京');
 
     expect(result.passages[0].text).toContain('東京');
     expect(result.passages[0].score).toBeGreaterThan(0);
@@ -514,7 +511,7 @@ describe('extractRelevantPassages lexical ranking', () => {
       '',
       'Use C# for Windows.',
     ].join('\n');
-    const result = extractRelevantPassages(markdown, 'C++', { topN: 3, minScore: 0.0001 });
+    const result = inspectSections(markdown, 'C++');
 
     expect(result.passages[0].text).toContain('C++ for games');
     expect(result.passages[0].heading).toBe('C++');
@@ -524,7 +521,7 @@ describe('extractRelevantPassages lexical ranking', () => {
 
   it('preserves numbers and does not collapse 3.11 into 311', () => {
     const markdown = 'Error code 311 is unrelated.\n\nProtocol version 3.11 is current.';
-    const result = extractRelevantPassages(markdown, '3.11', { topN: 1 });
+    const result = inspectSections(markdown, '3.11');
 
     expect(result.passages[0].text).toContain('3.11');
     expect(result.passages[0].score).toBeGreaterThan(0);
@@ -532,7 +529,7 @@ describe('extractRelevantPassages lexical ranking', () => {
 
   it('preserves negation so not deprecated outranks is deprecated', () => {
     const markdown = 'This API is deprecated.\n\nThis API is not deprecated.';
-    const result = extractRelevantPassages(markdown, 'not deprecated', { topN: 2 });
+    const result = inspectSections(markdown, 'not deprecated');
 
     expect(result.passages[0].text).toContain('not deprecated');
     expect(result.passages[0].score).toBeGreaterThan(
@@ -540,41 +537,14 @@ describe('extractRelevantPassages lexical ranking', () => {
     );
   });
 
-  it('returns deterministic score-zero fallback for empty query and no lexical hits', () => {
-    const markdown = [
-      'Fastify is a fast and low-overhead web framework for Node.js.',
-      'TypeScript adds static type checking to JavaScript.',
-      'To set up a Fastify server, install the package and create an app instance.',
-      'Prisma is a next-generation ORM for TypeScript and Node.js.',
-      'Fastify plugins extend server functionality with decorators and hooks.',
-      'This document has nothing to do with the query at all.',
-    ].join('\n\n');
 
-    const noQuery = extractRelevantPassages(markdown, '', { topN: 2 });
-    expect(noQuery.passages).toHaveLength(2);
-    expect(noQuery.passages.every((p) => p.score === 0)).toBe(true);
-    expect(noQuery.passages[0].text).toContain('Fastify is a fast');
-    expect(noQuery.passages[0].position).toBe(0);
-
-    const noHits = extractRelevantPassages(markdown, 'quantum computing', { topN: 3 });
-    expect(noHits.passages).toHaveLength(3);
-    expect(noHits.passages.every((p) => p.score === 0)).toBe(true);
-    expect(noHits.passages.map((p) => p.position)).toEqual([0, 1, 2]);
-
-    const noHitsMinScore = extractRelevantPassages(markdown, 'quantum computing', { topN: 3, minScore: 0.1 });
-    expect(noHitsMinScore.passages).toEqual([]);
-
-    const noQueryMinScore = extractRelevantPassages(markdown, '', { topN: 2, minScore: 0.1 });
-    expect(noQueryMinScore.passages).toHaveLength(2);
-    expect(noQueryMinScore.passages.every((p) => p.score === 0)).toBe(true);
-  });
 
   it('lets csv find read_csv while exact read_csv outranks a split read csv phrase', () => {
     const markdown = 'Please read csv files by hand.\n\nCall read_csv on the path.';
-    const component = extractRelevantPassages(markdown, 'csv', { topN: 2, contextWindow: 0 });
+    const component = inspectSections(markdown, 'csv');
     expect(component.passages.some((p) => p.text.includes('read_csv') && p.score > 0)).toBe(true);
 
-    const exact = extractRelevantPassages(markdown, 'read_csv', { topN: 2, contextWindow: 0 });
+    const exact = inspectSections(markdown, 'read_csv');
     expect(exact.passages[0].text).toContain('read_csv');
     expect(exact.passages[0].score).toBeGreaterThan(
       exact.passages.find((p) => p.text.includes('read csv'))?.score ?? 0,
@@ -583,40 +553,16 @@ describe('extractRelevantPassages lexical ranking', () => {
 
   it('finds Tokyo inside Chinese or Japanese prose without swallowing the whole script run', () => {
     const markdown = '欢迎来到巴黎旅行。\n\n欢迎来到東京旅行。\n\n東京は日本の首都です。';
-    const chinese = extractRelevantPassages(markdown, '東京', { topN: 2, contextWindow: 0 });
+    const chinese = inspectSections(markdown, '東京');
     expect(chinese.passages[0].text).toMatch(/東京/);
     expect(chinese.passages[0].score).toBeGreaterThan(0);
   });
 
-  it('respects topN, minScore, and contextWindow on structural groups', () => {
-    const markdown = [
-      '## Alpha',
-      '',
-      'Unrelated furniture.',
-      '',
-      '## Beta',
-      '',
-      'Fastify server setup lives here.',
-      '',
-      '## Gamma',
-      '',
-      'Also unrelated.',
-    ].join('\n');
 
-    const limited = extractRelevantPassages(markdown, 'fastify', { topN: 1, contextWindow: 0 });
-    expect(limited.passages).toHaveLength(1);
-    expect(limited.passages[0].text).toContain('Fastify server setup');
-
-    const filtered = extractRelevantPassages(markdown, 'fastify', { topN: 5, minScore: 999, contextWindow: 0 });
-    expect(filtered.passages).toEqual([]);
-
-    const withContext = extractRelevantPassages(markdown, 'fastify', { topN: 1, contextWindow: 1 });
-    expect(withContext.passages.map((p) => p.heading)).toEqual(['Alpha', 'Beta', 'Gamma']);
-  });
 
   it('breaks equal scores by structural position', () => {
     const markdown = 'The widget appears here.\n\nThe widget appears here.';
-    const result = extractRelevantPassages(markdown, 'widget', { topN: 2, contextWindow: 0 });
+    const result = inspectSections(markdown, 'widget');
 
     expect(result.passages).toHaveLength(2);
     expect(result.passages[0].score).toBe(result.passages[1].score);
@@ -626,21 +572,21 @@ describe('extractRelevantPassages lexical ranking', () => {
 
   it('ranks lowercase c++ against C++ documents without collapsing to C', () => {
     const markdown = 'Use C here.\n\nUse C++ here.';
-    const result = extractRelevantPassages(markdown, 'c++', { topN: 5, minScore: 0.0001 });
+    const result = inspectSections(markdown, 'c++');
 
-    expect(result.passages).toHaveLength(1);
+    expect(result.passages).toHaveLength(2);
     expect(result.passages[0].text).toContain('Use C++ here.');
-    expect(result.passages.some((p) => p.text === 'Use C here.')).toBe(false);
+    expect(result.passages.find(p => p.text === 'Use C here.')?.score).toBe(0);
   });
 
   it('finds café and résumé in mixed-script documents', () => {
-    const cafe = extractRelevantPassages('café 東京', 'café', { topN: 1, minScore: 0.0001 });
+    const cafe = inspectSections('café 東京', 'café');
     expect(cafe.passages).toHaveLength(1);
     expect(cafe.passages[0].text).toContain('café');
     expect(cafe.passages[0].score).toBeGreaterThan(0);
 
-    const resume = extractRelevantPassages('Unrelated.\n\nrésumé 東京', 'résumé', { topN: 1, minScore: 0.0001 });
-    expect(resume.passages).toHaveLength(1);
+    const resume = inspectSections('Unrelated.\n\nrésumé 東京', 'résumé');
+    expect(resume.passages).toHaveLength(2);
     expect(resume.passages[0].text).toContain('résumé');
     expect(resume.passages[0].score).toBeGreaterThan(0);
   });
@@ -657,7 +603,7 @@ describe('extractRelevantPassages lexical ranking', () => {
       '',
       'More text.',
     ].join('\n');
-    const result = extractRelevantPassages(markdown, 'docs', { topN: 1 });
+    const result = inspectSections(markdown, 'docs');
     const passage = result.passages[0];
     const base = markdown.slice(passage.source_offset!.start, passage.source_offset!.end);
 
@@ -680,7 +626,7 @@ describe('extractRelevantPassages lexical ranking', () => {
 
   it('collects nested typed references, stops cycles, and keeps footnote/link namespaces distinct', () => {
     const nested = 'Claim[^n].\n\n[^n]: See [source][ref].\n\n[ref]: https://example.com/evidence';
-    const nestedResult = extractRelevantPassages(nested, '', { topN: 10 });
+    const nestedResult = inspectSections(nested, '');
     const claim = nestedResult.passages.find((p) => p.text.includes('Claim[^n].'));
     expect(claim).toBeDefined();
     expect(claim!.text).toContain('[^n]: See [source][ref].');
@@ -688,7 +634,7 @@ describe('extractRelevantPassages lexical ranking', () => {
     expect(claim!.definitions?.map((d) => d.identifier)).toEqual(['n', 'ref']);
 
     const cyclic = 'Start[^a].\n\n[^a]: See [^b].\n\n[^b]: Back to [^a].';
-    const cyclicResult = extractRelevantPassages(cyclic, '', { topN: 10 });
+    const cyclicResult = inspectSections(cyclic, '');
     const start = cyclicResult.passages.find((p) => p.text.includes('Start[^a].'));
     expect(start).toBeDefined();
     expect(start!.text).toContain('[^a]: See [^b].');
@@ -696,7 +642,7 @@ describe('extractRelevantPassages lexical ranking', () => {
     expect(start!.definitions?.map((d) => d.identifier).sort()).toEqual(['a', 'b']);
 
     const namespaced = 'Claim[^n].\n\n[^n]: Footnote only.\n\n[n]: https://link-namespace.example';
-    const namespacedResult = extractRelevantPassages(namespaced, '', { topN: 10 });
+    const namespacedResult = inspectSections(namespaced, '');
     const footnoteClaim = namespacedResult.passages.find((p) => p.text.includes('Claim[^n].'));
     expect(footnoteClaim).toBeDefined();
     expect(footnoteClaim!.text).toContain('[^n]: Footnote only.');
@@ -704,31 +650,5 @@ describe('extractRelevantPassages lexical ranking', () => {
     expect(footnoteClaim!.definitions?.every((d) => d.identifier === 'n' && d.text.startsWith('[^n]:'))).toBe(true);
   });
 
-  it('expands contextWindow on zero-score no-hit fallback but not empty query or positive minScore', () => {
-    const markdown = 'Alpha paragraph.\n\nBeta paragraph.\n\nGamma paragraph.';
 
-    const noHit = extractRelevantPassages(markdown, 'unmatchedxyz', {
-      topN: 1,
-      contextWindow: 1,
-      minScore: 0,
-    });
-    expect(noHit.passages.map((p) => p.text)).toEqual([
-      'Alpha paragraph.',
-      'Beta paragraph.',
-    ]);
-
-    const emptyQuery = extractRelevantPassages(markdown, '', {
-      topN: 1,
-      contextWindow: 1,
-      minScore: 0,
-    });
-    expect(emptyQuery.passages.map((p) => p.text)).toEqual(['Alpha paragraph.']);
-
-    const filtered = extractRelevantPassages(markdown, 'unmatchedxyz', {
-      topN: 1,
-      contextWindow: 1,
-      minScore: 0.1,
-    });
-    expect(filtered.passages).toEqual([]);
-  });
 });

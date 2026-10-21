@@ -205,7 +205,7 @@ function sourceShell(source: PackableSource, contentMode: ContentMode, includeMa
         omitted_preview: [] as OmittedPreview[],
         ...(source.document_id && !source.read_more_unavailable ? {
           list_more: {
-            tool: 'scrape_url',
+            tool: 'webfetch',
             arguments: { document_id: source.document_id, list_sections: true },
           },
         } : {}),
@@ -870,32 +870,4 @@ export function flattenPackedSource(
     : {};
   const { results: _results, budget: _budget, ...rest } = payload;
   return finalizePacked({ ...rest, ...first }, limit, requestedSectionIds);
-}
-
-export function packQuickResearch(input: {
-  envelope: Record<string, unknown>;
-  results: Array<Record<string, unknown>>;
-  maxTokens: number;
-}): PackedResponse {
-  const included: Array<Record<string, unknown>> = [];
-  let omitted = 0;
-  const build = () => ({
-    ...input.envelope,
-    results: included,
-    ...(omitted > 0 ? { omitted_snippets: omitted } : {}),
-  });
-
-  if (!fits(build(), input.maxTokens)) {
-    return compactBudgetTooSmall(usedTokens(build(), input.maxTokens), input.maxTokens);
-  }
-
-  for (const result of input.results) {
-    included.push(result);
-    if (!fits(build(), input.maxTokens)) {
-      included.pop();
-      omitted += 1;
-    }
-  }
-
-  return finalizePacked(build(), input.maxTokens);
 }

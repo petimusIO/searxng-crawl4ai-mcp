@@ -59,7 +59,7 @@ services:
 
   # Lightpanda - lightweight headless browser for JS rendering
   lightpanda:
-    image: lightpanda/browser@sha256:c427b144613fbf099868c5ab54be509741c8535def6a40fd0b62360658e279d1
+    image: lightpanda/browser@sha256:979c36ed869f1016b8dcf22939a0633c262f2c30e892a03a9f720eba2ff1931e
     command: ["/bin/lightpanda", "serve", "--host", "0.0.0.0", "--port", "9222", "--advertise-host", "lightpanda", "--log-level", "info"]
     container_name: lightpanda
     networks:
@@ -90,7 +90,7 @@ services:
 
   # 4get — secondary metasearch aggregator (supplements SearXNG)
   fourget:
-    image: luuul/4get:latest
+    image: luuul/4get@sha256:a42c215ffed9fb9884c55f864f40a50a1651bc27b9d1213be2d090977c881612
     container_name: fourget
     environment:
       - FOURGET_PROTO=http

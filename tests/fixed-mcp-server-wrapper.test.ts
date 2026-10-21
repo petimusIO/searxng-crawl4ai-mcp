@@ -78,6 +78,9 @@ describe('fixed-mcp-server wrapper', () => {
     const listed = await withTimeout(client.listTools(), 5000, 'tools/list');
     const names = listed.tools.map((tool) => tool.name);
 
-    expect(names).toEqual(expect.arrayContaining(['search_web', 'research', 'scrape_url']));
+    expect(names).toEqual(['websearch', 'webfetch']);
+    for (const name of ['research', 'search_and_scrape', 'search_web', 'scrape_url', 'search_images']) {
+      await expect(client.callTool({ name, arguments: {} })).rejects.toThrow(/Unknown tool/);
+    }
   }, 12000);
 });

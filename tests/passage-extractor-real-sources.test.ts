@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { extractRelevantPassages } from '../src/passage-extractor.js';
+import { parseDocumentSections } from '../src/passage-extractor.js';
 
 // Focused excerpts from parent CRW snapshots in
 // /home/triiq/.hermes/profiles/axiom/cache/scratch/search-diagnosis/a2/source-snapshots.json.
@@ -51,22 +51,16 @@ const greenNormalized = palette.green.toUpperCase();\`
 describe('real captured source excerpts', () => {
   it('keeps the NASA seasons myth and incorrect qualification in one passage', () => {
     // Origin: spaceplace.nasa.gov/seasons/en/ CRW snapshot, tilt section.
-    const result = extractRelevantPassages(NASA_TILT_EXCERPT, 'Earth summer winter closer sun tilt', {
-      topN: 3,
-      contextWindow: 0,
-    });
+    const sections = parseDocumentSections(NASA_TILT_EXCERPT);
 
-    expect(result.passages.some((p) => p.text.includes('Many people believe') && p.text.includes('incorrect'))).toBe(true);
+    expect(sections.some((p) => p.text.includes('Many people believe') && p.text.includes('incorrect'))).toBe(true);
   });
 
   it('keeps the captured TypeScript satisfies palette example in one passage', () => {
     // Origin: typescriptlang.org handbook 4.9 CRW snapshot. Fences are malformed upstream.
-    const result = extractRelevantPassages(TS_SATISFIES_EXCERPT, 'satisfies operator inference palette', {
-      topN: 3,
-      contextWindow: 0,
-    });
+    const sections = parseDocumentSections(TS_SATISFIES_EXCERPT);
 
-    expect(result.passages.some((p) => (
+    expect(sections.some((p) => (
       p.text.includes('const palette = {')
       && p.text.includes('} satisfies Record<Colors')
       && p.text.includes('palette.green.toUpperCase()')

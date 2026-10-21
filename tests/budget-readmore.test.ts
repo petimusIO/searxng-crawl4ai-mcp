@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { DocumentStore } from '../src/document-store.js';
-import { SearXNGMCPServer } from '../src/index.js';
+import { WebFetchTool } from '../src/tools/webfetch.js';
 import { parseDocumentSections } from '../src/passage-extractor.js';
 import { countResponseTokens } from '../src/token-budget.js';
 
@@ -39,7 +39,7 @@ function scrapeOk(url: string, markdown = PAGE) {
 }
 
 function createHarness() {
-  const server = Object.create(SearXNGMCPServer.prototype) as any;
+  const server = Object.create(WebFetchTool.prototype) as any;
   const store = new Map<string, unknown>();
   const sets: Array<{ key: string; value: unknown; ttl?: number }> = [];
   let scrapeCalls = 0;
@@ -85,21 +85,21 @@ function decode(response: { content: Array<{ text: string }> }) {
 describe('scrape_url budget and saved-document reads', () => {
   it('rejects contradictory selectors before any crawl', async () => {
     const harness = createHarness();
-    const both = decode(await harness.server.handleScrapeUrl({
+    const both = decode(await harness.server.handle({
       url: 'https://example.com/docs',
       document_id: '11111111-1111-1111-1111-111111111111',
     }));
-    const sectionWithQuery = decode(await harness.server.handleScrapeUrl({
+    const sectionWithQuery = decode(await harness.server.handle({
       document_id: '11111111-1111-1111-1111-111111111111',
       query: 'fastify',
       section_ids: ['s0'],
     }));
-    const badOffset = decode(await harness.server.handleScrapeUrl({
+    const badOffset = decode(await harness.server.handle({
       document_id: '11111111-1111-1111-1111-111111111111',
       list_sections: true,
       section_offset: -1,
     }));
-    const badTokens = decode(await harness.server.handleScrapeUrl({
+    const badTokens = decode(await harness.server.handle({
       url: 'https://example.com/docs',
       max_tokens: 3.5,
     }));
@@ -113,9 +113,10 @@ describe('scrape_url budget and saved-document reads', () => {
 
   it('reuses a saved URL snapshot for a different query and never fetches on document_id', async () => {
     const harness = createHarness();
-    const first = decode(await harness.server.handleScrapeUrl({
+    const first = decode(await harness.server.handle({
       url: 'https://example.com/docs',
       query: 'fastify listen',
+      content_mode: 'relevant_only',
     }));
     expect(first.body.document_id).toMatch(/^[0-9a-f-]{36}$/i);
     expect(first.body.relevant_passages.passages[0].section_id).toMatch(/^s\d+$/);
@@ -123,7 +124,7 @@ describe('scrape_url budget and saved-document reads', () => {
     expect(first.body.budget.used).toBe(countResponseTokens(first.text));
     expect(harness.scrapeCalls).toBe(1);
 
-    const second = decode(await harness.server.handleScrapeUrl({
+    const second = decode(await harness.server.handle({
       url: 'https://example.com/docs',
       query: 'chairs furniture',
     }));
@@ -131,7 +132,7 @@ describe('scrape_url budget and saved-document reads', () => {
     expect(second.body.relevant_passages.passages.some((p: { text: string }) => p.text.includes('chairs'))).toBe(true);
     expect(harness.scrapeCalls).toBe(1);
 
-    const byId = decode(await harness.server.handleScrapeUrl({
+    const byId = decode(await harness.server.handle({
       document_id: first.body.document_id,
       query: 'fastify listen',
     }));
@@ -141,7 +142,7 @@ describe('scrape_url budget and saved-document reads', () => {
 
   it('returns document_unavailable for unknown/expired ids without fetching', async () => {
     const harness = createHarness();
-    const missing = decode(await harness.server.handleScrapeUrl({
+    const missing = decode(await harness.server.handle({
       document_id: '00000000-0000-4000-8000-000000000000',
     }));
     expect(missing.body.error).toBe('document_unavailable');
@@ -159,7 +160,7 @@ describe('scrape_url budget and saved-document reads', () => {
     expect(saved.ok).toBe(true);
     if (!saved.ok) return;
     clock.value += 11;
-    const expired = decode(await harness.server.handleScrapeUrl({
+    const expired = decode(await harness.server.handle({
       document_id: saved.document.document_id,
       query: 'fastify',
     }));
@@ -176,7 +177,7 @@ describe('scrape_url budget and saved-document reads', () => {
       scrape: async (url: string) => scrapeOk(url, many),
     });
 
-    const first = decode(await harness.server.handleScrapeUrl({
+    const first = decode(await harness.server.handle({
       url: 'https://example.com/many',
       query: 'fastify listen',
       max_tokens: 700,
@@ -184,7 +185,7 @@ describe('scrape_url budget and saved-document reads', () => {
     const omittedId = first.body.sections.omitted_preview[0].id;
     expect(omittedId).toBeDefined();
 
-    const retrieved = decode(await harness.server.handleScrapeUrl({
+    const retrieved = decode(await harness.server.handle({
       document_id: first.body.document_id,
       section_ids: [omittedId],
       max_tokens: 6000,
@@ -193,7 +194,7 @@ describe('scrape_url budget and saved-document reads', () => {
     expect(retrieved.body.relevant_passages.passages[0].section_id).toBe(omittedId);
     expect(retrieved.body.relevant_passages.passages[0].text).toContain('Body');
 
-    const unknown = decode(await harness.server.handleScrapeUrl({
+    const unknown = decode(await harness.server.handle({
       document_id: first.body.document_id,
       section_ids: ['s999'],
     }));
@@ -202,7 +203,7 @@ describe('scrape_url budget and saved-document reads', () => {
     const seen = new Set<string>();
     let offset = 0;
     for (let i = 0; i < 20; i++) {
-      const page = decode(await harness.server.handleScrapeUrl({
+      const page = decode(await harness.server.handle({
         document_id: first.body.document_id,
         list_sections: true,
         section_offset: offset,
@@ -215,55 +216,5 @@ describe('scrape_url budget and saved-document reads', () => {
       offset = page.body.next_offset;
     }
     expect(seen).toEqual(new Set(parseDocumentSections(many).map((s) => s.id)));
-  });
-});
-
-describe('research budget and saved-document handles', () => {
-  it('validates max_tokens before discovery or scrape', async () => {
-    const harness = createHarness();
-    const result = decode(await harness.server.handleResearch({
-      query: 'fastify listen',
-      max_tokens: 100,
-    }));
-    expect(result.body.error).toBe('invalid_arguments');
-    expect(harness.scrapeCalls).toBe(0);
-  });
-
-  it('defaults normal research to relevant_only, exposes handles, and invalidates stale cached ids', async () => {
-    const harness = createHarness();
-    harness.server.fourget = {
-      search: async () => ({
-        status: 'ok',
-        web: Array.from({ length: 5 }, (_, i) => ({
-          title: `Docs ${i}`,
-          url: `https://example.com/docs-${i}`,
-          description: 'fastify listen',
-          date: null,
-          type: 'web',
-        })),
-        answer: [],
-        npt: '',
-      }),
-    };
-
-    const first = decode(await harness.server.handleResearch({ query: 'fastify listen' }));
-    expect(first.body.results[0].data?.markdown).toBeUndefined();
-    expect(first.body.results[0].document_id).toMatch(/^[0-9a-f-]{36}$/i);
-    expect(first.body.results[0].sections.total).toBe(
-      first.body.results[0].sections.included + first.body.results[0].sections.omitted,
-    );
-    expect(first.body.budget.used).toBe(countResponseTokens(first.text));
-    expect(first.body.budget.used).toBeLessThanOrEqual(6000);
-    expect(harness.sets.some((entry) => String(entry.key).startsWith('research:v6'))).toBe(true);
-
-    const cached = decode(await harness.server.handleResearch({ query: 'fastify listen' }));
-    expect(cached.body.results[0].document_id).toBe(first.body.results[0].document_id);
-    const beforeEvict = harness.scrapeCalls;
-
-    harness.server.documentStore = new DocumentStore();
-    const afterEvict = decode(await harness.server.handleResearch({ query: 'fastify listen' }));
-    expect(afterEvict.body.results[0].document_id).not.toBe(first.body.results[0].document_id);
-    expect(harness.server.documentStore.has(first.body.results[0].document_id)).toBe(false);
-    expect(harness.scrapeCalls).toBeGreaterThanOrEqual(beforeEvict);
   });
 });

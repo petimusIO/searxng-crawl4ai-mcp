@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest';
 import {
-  extractRelevantPassages,
   parseDocumentSections,
   rankDocumentSections,
 } from '../src/passage-extractor.js';
@@ -34,9 +33,7 @@ describe('parse and rank document sections', () => {
     expect(ranked[0].id).toBe('s1');
     expect(ranked[0].score).toBeGreaterThan(ranked[1].score);
 
-    const extracted = extractRelevantPassages(MARKDOWN, 'fastify listen', { topN: 5 });
-    expect(extracted.passages[0].section_id).toBe('s1');
-    expect(extracted.passages[0].text).toBe(parsed[1].text);
+
   });
 
   it('keeps needed reference definitions with the parsed section text', () => {

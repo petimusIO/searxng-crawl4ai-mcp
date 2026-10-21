@@ -1,11 +1,11 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 
-const indexSource = readFileSync(new URL('../src/index.ts', import.meta.url), 'utf8');
+const indexSource = readFileSync(new URL('../src/tools/webfetch.ts', import.meta.url), 'utf8');
 
 function cachedScrapeUrlBody(): string {
   const start = indexSource.indexOf('private async cachedScrapeUrl');
-  const end = indexSource.indexOf('private setupToolHandlers');
+  const end = indexSource.indexOf('async handle(');
   return indexSource.slice(start, end);
 }
 

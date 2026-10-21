@@ -1,9 +1,8 @@
 /**
- * Passage Extractor: structural Markdown groups ranked with MiniSearch.
+ * Structural Markdown sections and optional query ranking for webfetch.
  *
  * Groups remark-parse + remark-gfm AST blocks (exact original slices),
- * scores each group with in-process MiniSearch BM25+, and returns the
- * top-N passages with surrounding structural context.
+ * ranks whole sections locally for explicit query/section budget selection.
  */
 
 import MiniSearch from 'minisearch';
@@ -11,12 +10,6 @@ import MarkdownIt from 'markdown-it';
 import remarkGfm from 'remark-gfm';
 import remarkParse from 'remark-parse';
 import { unified } from 'unified';
-
-export interface PassageExtractionOptions {
-  topN?: number;
-  contextWindow?: number;
-  minScore?: number;
-}
 
 export interface PassageDefinition {
   identifier: string;
@@ -36,23 +29,6 @@ export interface RankedSection {
   id: string;
   score: number;
   position: number;
-}
-
-export interface ScoredPassage {
-  text: string;
-  score: number;
-  position: number;
-  heading?: string;
-  section_id?: string;
-  source_offset?: { start: number; end: number };
-  definitions?: PassageDefinition[];
-}
-
-export interface PassageExtractionResult {
-  passages: ScoredPassage[];
-  query: string;
-  total_passages: number;
-  top_n: number;
 }
 
 interface ParsedBlockNode {
@@ -496,18 +472,6 @@ function toDocumentSection(group: StructuralGroup, position: number): DocumentSe
   };
 }
 
-function toPassage(group: StructuralGroup, position: number, score: number): ScoredPassage {
-  return {
-    text: group.text,
-    score,
-    position,
-    heading: group.heading,
-    section_id: sectionId(position),
-    source_offset: { start: group.start, end: group.end },
-    ...(group.definitions.length > 0 ? { definitions: group.definitions } : {}),
-  };
-}
-
 /**
  * Parse markdown into stable structural sections without ranking.
  */
@@ -560,138 +524,4 @@ export function rankDocumentSections(sections: DocumentSection[], query: string)
     .sort((a, b) => b.score - a.score || a.position - b.position);
 }
 
-function fallbackPassages(
-  groups: StructuralGroup[],
-  query: string,
-  topN: number,
-): PassageExtractionResult {
-  return {
-    passages: groups.slice(0, topN).map((group, position) => toPassage(group, position, 0)),
-    query,
-    total_passages: groups.length,
-    top_n: topN,
-  };
-}
-
-function applyContextWindow(
-  groups: StructuralGroup[],
-  topPassages: ScoredPassage[],
-  contextWindow: number,
-): ScoredPassage[] {
-  const included = new Set(topPassages.map((passage) => passage.position));
-  const withContext: ScoredPassage[] = [];
-
-  for (const passage of topPassages) {
-    for (let offset = contextWindow; offset > 0; offset--) {
-      const pos = passage.position - offset;
-      if (pos >= 0 && !included.has(pos)) {
-        included.add(pos);
-        withContext.push(toPassage(groups[pos], pos, passage.score * 0.1));
-      }
-    }
-
-    withContext.push(passage);
-
-    for (let offset = 1; offset <= contextWindow; offset++) {
-      const pos = passage.position + offset;
-      if (pos < groups.length && !included.has(pos)) {
-        included.add(pos);
-        withContext.push(toPassage(groups[pos], pos, passage.score * 0.1));
-      }
-    }
-  }
-
-  withContext.sort((a, b) => a.position - b.position);
-  return withContext;
-}
-
-const searchDefaults = {
-  boost: { heading: 2, body: 1 },
-  fuzzy: false as const,
-  prefix: false as const,
-};
-
-/**
- * Extract relevant passages from markdown using structural groups and MiniSearch.
- */
-export function extractRelevantPassages(
-  markdown: string,
-  query: string,
-  options: PassageExtractionOptions = {}
-): PassageExtractionResult {
-  const topN = options.topN ?? 5;
-  const contextWindow = options.contextWindow ?? 0;
-  const minScore = options.minScore ?? 0.0;
-
-  const groups = groupMarkdownSections(markdown);
-
-  if (groups.length === 0) {
-    return {
-      passages: [],
-      query,
-      total_passages: 0,
-      top_n: topN,
-    };
-  }
-
-  const queryTerms = tokenizeText(query);
-  if (queryTerms.length === 0) {
-    return fallbackPassages(groups, query, topN);
-  }
-
-  const index = new MiniSearch({
-    fields: ['heading', 'body'],
-    storeFields: ['id'],
-    tokenize: tokenizeText,
-    processTerm: (term) => term.toLowerCase(),
-    searchOptions: searchDefaults,
-  });
-
-  index.addAll(groups.map((group, id) => ({
-    id,
-    heading: group.heading ?? '',
-    body: searchableBody(group.text),
-  })));
-
-  const hits = index.search(query);
-  if (hits.length === 0) {
-    if (minScore > 0) {
-      return {
-        passages: [],
-        query,
-        total_passages: groups.length,
-        top_n: topN,
-      };
-    }
-    const fallback = fallbackPassages(groups, query, topN);
-    if (contextWindow > 0 && fallback.passages.length > 0) {
-      return {
-        ...fallback,
-        passages: applyContextWindow(groups, fallback.passages, contextWindow),
-      };
-    }
-    return fallback;
-  }
-
-  const scored = hits
-    .map((hit) => toPassage(groups[hit.id], hit.id, hit.score))
-    .sort((a, b) => b.score - a.score || a.position - b.position);
-
-  const topPassages = scored.slice(0, topN).filter((passage) => passage.score >= minScore);
-
-  if (contextWindow > 0 && topPassages.length > 0) {
-    return {
-      passages: applyContextWindow(groups, topPassages, contextWindow),
-      query,
-      total_passages: groups.length,
-      top_n: topN,
-    };
-  }
-
-  return {
-    passages: topPassages,
-    query,
-    total_passages: groups.length,
-    top_n: topN,
-  };
-}
+const searchDefaults = { boost: { heading: 2, body: 1 }, fuzzy: false as const, prefix: false as const };

@@ -1,12 +1,13 @@
 import { describe, expect, it, vi } from 'vitest';
 import { SearXNGMCPServer } from '../src/index.js';
+import { WebSearchTool } from '../src/tools/websearch.js';
 import { buildCacheKey } from '../src/cache-key.js';
 
 const query = 'news cache routing';
 const rows = Array.from({ length: 6 }, (_, i) => ({ title: `News ${i}`, url: `https://news.example/${i}`,
   description: 'News evidence snippet', date: null, type: 'news' }));
 function fixture() {
-  const server = Object.create(SearXNGMCPServer.prototype) as any;
+  const server = Object.create(WebSearchTool.prototype) as any;
   const entries = new Map<string, unknown>();
   server.cache = {
     get: vi.fn(async (key: string) => entries.get(key) ?? null),
@@ -23,15 +24,9 @@ function fixture() {
   return { server, entries };
 }
 const cases = [
-  { label: 'search_web', method: 'handleSearchWeb', args: { maxResults: 5 },
-    namespace: 'search:primary-fallback:v2', fields: (categories: string, scraper: string) => [query, categories, '', 'en', scraper, 5],
+  { label: 'websearch', method: 'handle', args: { maxResults: 5 },
+    namespace: 'websearch:v1', fields: (categories: string, scraper: string) => [query, categories, '', 'en', scraper, 5, 6000],
     route: (body: any) => body.engine_info?.route },
-  { label: 'research', method: 'handleResearch', args: { max_results: 2 },
-    namespace: 'research:v6', fields: (categories: string, scraper: string) => [query, 'normal', 'single', 2, categories, 'markdown', 'relevant_only', scraper, 6000],
-    route: (body: any) => body.research_metadata?.discovery_route },
-  { label: 'legacy', method: 'handleSearchAndScrape', args: { maxResults: 2, scrapeAll: true },
-    namespace: 'search_and_scrape:v4', fields: (categories: string, scraper: string) => [query, 2, '', true, categories, 'markdown', 'full', scraper],
-    route: (body: any) => body.discovery_route },
 ];
 
 describe.each(cases)('$label news cache identity', ({ method, args, namespace, fields, route }) => {
@@ -76,9 +71,10 @@ describe.each(cases)('$label news cache identity', ({ method, args, namespace, f
 it('advertises DuckDuckGo defaults for both endpoints without injecting scraper arguments', async () => {
   const { server } = fixture();
   const handlers = new Map<string, Function>();
-  server.setupToolHandlers({ setRequestHandler: (schema: any, fn: Function) => handlers.set(schema.shape.method.value, fn) });
+  const host = Object.create(SearXNGMCPServer.prototype) as any;
+  host.setupToolHandlers({ setRequestHandler: (schema: any, fn: Function) => handlers.set(schema.shape.method.value, fn) });
   const { tools } = await handlers.get('tools/list')!();
-  for (const name of ['search_web', 'research']) {
+  for (const name of ['websearch']) {
     const scraper = tools.find((tool: any) => tool.name === name).inputSchema.properties.scraper;
     expect(scraper.default).toBeUndefined();
     expect(scraper.description).toContain('Defaults: "ddg" for web and news');

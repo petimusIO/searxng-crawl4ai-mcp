@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { SearXNGMCPServer } from '../src/index.js';
+import { WebFetchTool } from '../src/tools/webfetch.js';
 
 function scrapeOk(wordCount: number, markdown = 'short successful page') {
   return {
@@ -18,7 +18,7 @@ function scrapeOk(wordCount: number, markdown = 'short successful page') {
 }
 
 function createScrapeHarness(scrape: (url: string) => Promise<unknown> | unknown) {
-  const server = Object.create(SearXNGMCPServer.prototype) as any;
+  const server = Object.create(WebFetchTool.prototype) as any;
   const store = new Map<string, unknown>();
   const sets: Array<{ key: string; value: unknown; ttl?: number }> = [];
   let scrapeCalls = 0;
@@ -87,65 +87,5 @@ describe('cached scrape policy', () => {
 
     expect(result.success).toBe(true);
     expect(harness.sets).toEqual([]);
-  });
-});
-
-describe('research composite cache policy', () => {
-  function createResearchHarness(scrape: (url: string) => Promise<unknown>) {
-    const server = Object.create(SearXNGMCPServer.prototype) as any;
-    const sets: Array<{ key: string; value: unknown; ttl?: number }> = [];
-    server.cache = {
-      get: async () => null,
-      set: async (key: string, value: unknown, ttl?: number) => {
-        sets.push({ key, value, ttl });
-      },
-    };
-    server.scrapeSingleUrl = async (url: string) => scrape(url);
-    return { server, sets };
-  }
-
-  async function normalResearch(server: any, hits: Array<{ url: string; title: string; content: string }>, cacheKey: string) {
-    const response = await server.handleNormalResearch(
-      'answer',
-      'multi',
-      hits,
-      'relevant_only',
-      undefined,
-      hits.length,
-      [],
-      Date.now(),
-      cacheKey,
-      'fourget',
-    );
-    return { decoded: JSON.parse(response.content[0].text), raw: response };
-  }
-
-  it('does not composite-cache research responses that contain failures', async () => {
-    const { server, sets } = createResearchHarness(async () => ({
-      success: false,
-      error: 'blocked',
-    }));
-
-    await normalResearch(
-      server,
-      [{ url: 'https://failed.test', title: 'Failed', content: 'snippet' }],
-      'research:v3:should-not-store',
-    );
-
-    expect(sets).toEqual([]);
-  });
-
-  it('composite-caches fully successful research, including short pages', async () => {
-    const { server, sets } = createResearchHarness(async () => scrapeOk(12));
-    const { raw } = await normalResearch(
-      server,
-      [{ url: 'https://short.test', title: 'Short', content: 'snippet' }],
-      'research:v3:ok',
-    );
-
-    expect(sets).toHaveLength(1);
-    expect(sets[0].key).toBe('research:v3:ok');
-    expect(sets[0].value).toEqual(raw);
-    expect(sets[0].ttl).toBe(300_000);
   });
 });

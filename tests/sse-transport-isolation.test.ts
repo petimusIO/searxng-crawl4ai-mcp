@@ -94,27 +94,13 @@ function toolText(result: { content?: Array<{ text?: string }> }) {
 }
 
 function stubTools(host: SearXNGMCPServer) {
-  const target = host as unknown as {
-    handleSearchImages: (args: { query: string }) => Promise<unknown>;
-    handleResearch: (args: { query: string }) => Promise<unknown>;
-    handleSearchWeb: (args: { query: string }) => Promise<unknown>;
-    handleScrapeUrl: (args: { url?: string }) => Promise<unknown>;
-  };
-  target.handleSearchImages = async (args) => ({
-    content: [{ type: 'text', text: JSON.stringify({ query: args.query, images: [{ title: 'img' }] }) }],
-  });
-  target.handleResearch = async (args) => {
+  const target = host as any;
+  target.websearch = { handle: async (args: { query: string }) => {
     await delay(40);
-    return {
-      content: [{ type: 'text', text: JSON.stringify({ query: args.query, results: [{ title: 'research' }] }) }],
-    };
-  };
-  target.handleSearchWeb = async (args) => ({
-    content: [{ type: 'text', text: JSON.stringify({ query: args.query, results: [] }) }],
-  });
-  target.handleScrapeUrl = async () => ({
-    content: [{ type: 'text', text: JSON.stringify({ success: true }) }],
-  });
+    return { content: [{ type: 'text', text: JSON.stringify({ query: args.query, results: [] }) }] };
+  } };
+  target.webfetch = { handle: async () => ({ content: [{ type: 'text', text: JSON.stringify({ success: true }) }] }) };
+
 }
 
 async function httpPort(host: SearXNGMCPServer): Promise<number> {
@@ -186,23 +172,50 @@ describe('SSE transport isolation', () => {
 
     const listed = await withTimeout(alpha.client.listTools(), 3000, 'tools/list');
     expect(listed.tools.map((tool) => tool.name)).toEqual(
-      expect.arrayContaining(['search_images', 'research', 'search_web', 'scrape_url']),
+      ['websearch', 'webfetch'],
     );
 
     const [images, research] = await Promise.all([
-      withTimeout(alpha.client.callTool({ name: 'search_images', arguments: { query: 'saturn' } }), 3000, 'alpha images'),
-      withTimeout(alpha.client.callTool({ name: 'research', arguments: { query: 'saturn' } }), 3000, 'alpha research'),
+      withTimeout(alpha.client.callTool({ name: 'websearch', arguments: { query: 'saturn' } }), 3000, 'alpha images'),
+      withTimeout(alpha.client.callTool({ name: 'websearch', arguments: { query: 'saturn' } }), 3000, 'alpha research'),
     ]);
     expect(toolText(images).query).toBe('saturn');
     expect(toolText(research).query).toBe('saturn');
 
     const [ownA, ownB] = await Promise.all([
-      withTimeout(alpha.client.callTool({ name: 'search_images', arguments: { query: 'alpha' } }), 3000, 'alpha own'),
-      withTimeout(beta.client.callTool({ name: 'search_images', arguments: { query: 'beta' } }), 3000, 'beta own'),
+      withTimeout(alpha.client.callTool({ name: 'websearch', arguments: { query: 'alpha' } }), 3000, 'alpha own'),
+      withTimeout(beta.client.callTool({ name: 'websearch', arguments: { query: 'beta' } }), 3000, 'beta own'),
     ]);
     expect(toolText(ownA).query).toBe('alpha');
     expect(toolText(ownB).query).toBe('beta');
   }, 8000);
+
+  it('authenticates both HTTP proxy forms and rejects legacy names without dispatch', async () => {
+    process.env.MCP_INTERNAL_TOKEN = 'test-only-token';
+    try {
+      const url = await startHost();
+      const base = url.replace(/\/sse$/, '');
+      const invoke = (path: string, body: unknown, authorized = true) => fetch(`${base}${path}`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json', ...(authorized ? { Authorization: 'Bearer test-only-token' } : {}) }, body: JSON.stringify(body),
+      });
+      expect((await invoke('/mcp/tool/websearch', { arguments: { query: 'denied' } }, false)).status).toBe(401);
+      expect((await invoke('/mcp/call', { name: 'webfetch', arguments: { url: 'https://chosen.test' } }, false)).status).toBe(401);
+      for (const name of ['websearch', 'webfetch']) {
+        for (const path of [`/mcp/tool/${name}`, '/mcp/call']) {
+          const response = await invoke(path, { name, arguments: { query: 'allowed', url: 'https://chosen.test' } });
+          expect(response.status).toBe(200);
+          expect((await response.json()).ok).toBe(true);
+        }
+      }
+      for (const name of ['research', 'search_and_scrape', 'search_web', 'scrape_url', 'search_images']) {
+        for (const path of [`/mcp/tool/${name}`, '/mcp/call']) {
+          const response = await invoke(path, { name, arguments: {} });
+          expect(response.status).toBe(404);
+          expect((await response.json()).ok).toBe(false);
+        }
+      }
+    } finally { delete process.env.MCP_INTERNAL_TOKEN; }
+  });
 
   it('keeps the other client usable after one SSE session closes', async () => {
     const url = await startHost();
@@ -214,9 +227,9 @@ describe('SSE transport isolation', () => {
 
     await withTimeout(alpha.client.close(), 2000, 'alpha close');
     const listed = await withTimeout(beta.client.listTools(), 3000, 'beta tools after peer close');
-    expect(listed.tools.map((tool) => tool.name)).toContain('search_images');
+    expect(listed.tools.map((tool) => tool.name)).toContain('websearch');
     const still = await withTimeout(
-      beta.client.callTool({ name: 'search_images', arguments: { query: 'still-here' } }),
+      beta.client.callTool({ name: 'websearch', arguments: { query: 'still-here' } }),
       3000,
       'beta after peer close',
     );

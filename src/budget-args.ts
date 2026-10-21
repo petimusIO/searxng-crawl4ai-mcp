@@ -52,22 +52,6 @@ export function validateContentMode(value: unknown, fallback: ContentMode): { ok
   return { ok: true, content_mode: value as ContentMode };
 }
 
-export function validateResearchArgs(args: Record<string, unknown> | undefined): ArgValidation {
-  const raw = args ?? {};
-  const tokens = validateMaxTokens(raw.max_tokens);
-  if (!tokens.ok) return invalid(tokens.error);
-  const mode = validateContentMode(raw.content_mode, 'relevant_only');
-  if (!mode.ok) return invalid(mode.message);
-  return {
-    ok: true,
-    value: {
-      max_tokens: tokens.max_tokens,
-      content_mode: mode.content_mode,
-      list_sections: false,
-    },
-  };
-}
-
 export function validateScrapeArgs(args: Record<string, unknown> | undefined): ArgValidation {
   const raw = args ?? {};
   const hasUrl = Object.prototype.hasOwnProperty.call(raw, 'url');
@@ -84,8 +68,12 @@ export function validateScrapeArgs(args: Record<string, unknown> | undefined): A
 
   const hasFormats = Object.prototype.hasOwnProperty.call(raw, 'formats');
   const hasTimeout = Object.prototype.hasOwnProperty.call(raw, 'timeout');
-  if (hasDocumentId && (hasFormats || hasTimeout)) {
-    return invalid('formats and timeout apply only to url fetches');
+  const hasWait = Object.prototype.hasOwnProperty.call(raw, 'wait_for');
+  if (hasDocumentId && (hasFormats || hasTimeout || hasWait)) {
+    return invalid('formats, timeout and wait_for apply only to url fetches');
+  }
+  if (hasWait && (typeof raw.wait_for !== 'number' || !Number.isFinite(raw.wait_for) || raw.wait_for < 0)) {
+    return invalid('wait_for must be a nonnegative number');
   }
   if (hasTimeout && (typeof raw.timeout !== 'number' || !Number.isFinite(raw.timeout) || raw.timeout < 0)) {
     return invalid('timeout must be a nonnegative number');
@@ -96,7 +84,7 @@ export function validateScrapeArgs(args: Record<string, unknown> | undefined): A
 
   const tokens = validateMaxTokens(raw.max_tokens);
   if (!tokens.ok) return invalid(tokens.error);
-  const mode = validateContentMode(raw.content_mode, 'relevant_only');
+  const mode = validateContentMode(raw.content_mode, 'full');
   if (!mode.ok) return invalid(mode.message);
 
   const hasQuery = Object.prototype.hasOwnProperty.call(raw, 'query');

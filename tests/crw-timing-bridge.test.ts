@@ -1,7 +1,7 @@
 import axios from 'axios';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ScrapeClient } from '../src/scrape-client.js';
-import { SearXNGMCPServer } from '../src/index.js';
+import { WebFetchTool } from '../src/tools/webfetch.js';
 import { withSearchTiming, withSourceTiming } from '../src/search-timing.js';
 
 function capture() {
@@ -18,9 +18,9 @@ describe('CRW internal timing bridge', () => {
   it('marks HTTP fallback extraction and returned evidence partial after failed JS escalation', async () => {
     const records = capture();
     vi.spyOn(axios, 'post').mockResolvedValue({ data: { success: true, warning: 'js_escalation_failed: Timeout after 2916ms', data: { markdown: 'Useful fallback evidence.', metadata: { statusCode: 200, renderedWith: 'http' } } } });
-    const server = Object.create(SearXNGMCPServer.prototype) as any;
+    const server = Object.create(WebFetchTool.prototype) as any;
     server.cache = { get: async () => null, set: vi.fn() };
-    const response: any = await withSearchTiming(undefined, 'scrape_url', () => server.handleScrapeUrl({ url: 'https://example.com/page', max_tokens: 1200 }));
+    const response: any = await withSearchTiming(undefined, 'scrape_url', () => server.handle({ url: 'https://example.com/page', max_tokens: 1200 }));
     expect(JSON.parse(response.content[0].text).success).toBe(true);
     for (const stage of ['mcp.crw.request', 'mcp.crawl.page', 'mcp.request.total']) {
       expect(records.find(record => record.stage === stage)?.status).toBe('partial');
@@ -84,7 +84,7 @@ describe('CRW internal timing bridge', () => {
     const records = capture();
     const post = vi.spyOn(axios, 'post');
     const cached = { success: true, url: 'https://example.com/page', data: { markdown: 'Cached evidence.', metadata: { word_count: 2 } } };
-    const server = Object.create(SearXNGMCPServer.prototype) as any;
+    const server = Object.create(WebFetchTool.prototype) as any;
     server.cache = { get: vi.fn(async () => cached), set: vi.fn() };
     const result = await withSearchTiming(undefined, 'research', () => withSourceTiming(0, () => server.cachedScrapeUrl('https://example.com/page', ['markdown'], 3000)));
     expect(result).toBe(cached);
