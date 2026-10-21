@@ -1,3 +1,4 @@
+import { skipTiming, timedAsync, timedSync } from './search-timing.js';
 import type { FourgetImageSearchResponse } from './fourget-client.js';
 import type { SearXNGSearchResponse } from './searxng-client.js';
 import {
@@ -81,14 +82,15 @@ export async function searchImages(options: SearchImagesOptions): Promise<Search
   let fallbackReason = 'error';
 
   try {
-    const fourgetResponse = await options.fourget.searchImages(query, {
+    const fourgetResponse = await timedAsync('mcp.images.primary', () => options.fourget.searchImages(query, {
       scraper,
       nsfw: 'no',
       timeoutMs: options.fourgetTimeoutMs ?? 2500,
-    });
-    fourgetImages = usableFourgetImages(fourgetResponse.image).slice(0, maxResults);
+    }));
+    fourgetImages = timedSync('mcp.images.normalize', () => usableFourgetImages(fourgetResponse.image).slice(0, maxResults));
 
     if (fourgetResponse.status === 'ok' && fourgetImages.length >= minFourgetResults) {
+      skipTiming('mcp.images.fallback');
       return {
         query,
         images: fourgetImages,
@@ -106,7 +108,7 @@ export async function searchImages(options: SearchImagesOptions): Promise<Search
   const fallbackTimeoutMs = options.fallbackTimeoutMs ?? 1_800;
 
   try {
-    const searxngResponse = await Promise.race([
+    const searxngResponse = await timedAsync('mcp.images.fallback', () => Promise.race([
       options.searxng.search(query, {
         engines: SAFE_IMAGE_ENGINES,
         language: 'en',
@@ -116,13 +118,13 @@ export async function searchImages(options: SearchImagesOptions): Promise<Search
       new Promise<never>((_, reject) => {
         setTimeout(() => reject(new Error('searxng-timeout')), fallbackTimeoutMs);
       }),
-    ]);
-    const searxngImages = dedupeSearchImages(
+    ]));
+    const searxngImages = timedSync('mcp.images.normalize', () => dedupeSearchImages(
       (searxngResponse.results ?? [])
         .map(normalizeSearxngImage)
         .filter((image): image is SearchImage => Boolean(image)),
-    );
-    const merged = dedupeSearchImages([...fourgetImages, ...searxngImages]).slice(0, maxResults);
+    ));
+    const merged = timedSync('mcp.images.normalize', () => dedupeSearchImages([...fourgetImages, ...searxngImages]).slice(0, maxResults));
 
     if (merged.length === 0) {
       return { query, images: [], route: 'empty', fallbackReason };

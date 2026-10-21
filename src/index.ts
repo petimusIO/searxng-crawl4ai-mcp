@@ -1,3 +1,4 @@
+import { cachedTiming, errorTimingStatus, responseTimingStatus, skipTiming, timedAsync, timedFunction, timedSync, timingStringify, withSearchTiming, withSourceTiming } from './search-timing.js';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
@@ -10,23 +11,33 @@ import {
 import { config } from 'dotenv';
 import { logger } from './logger.js';
 import { SearXNGClient } from './searxng-client.js';
-import { ScrapeClient, ScrapeClientResponse, scrapeProvenance } from './scrape-client.js';
+import { ScrapeClient, ScrapeClientResponse, scrapeProvenance, scrapeOutcome, scrapeCacheEligible, type ScrapeOptions, type FetchProvenance } from './scrape-client.js';
 import { RedisCache } from './redis-cache.js';
 import { normalizeUrl } from './url-normalizer.js';
-import { extractRelevantPassages, parseDocumentSections, rankDocumentSections } from './passage-extractor.js';
+import { extractRelevantPassages, parseDocumentSections as parseSections, rankDocumentSections as rankSections } from './passage-extractor.js';
 import { stripMarkdownFromData, ContentMode } from './content-utils.js';
-import { DEFAULT_FOURGET_SCRAPER, FourgetClient } from './fourget-client.js';
-import { discoverUrls } from './url-discovery.js';
+import { DEFAULT_FOURGET_NEWS_SCRAPER, DEFAULT_FOURGET_SCRAPER, FourgetClient } from './fourget-client.js';
+import { discoverUrls as discover, isFourgetNewsRoute } from './url-discovery.js';
 import { buildCacheKey } from './cache-key.js';
 import { DEFAULT_IMAGE_LIMIT, IMAGE_CACHE_PREFIX, imageSearchCacheFields, searchImages } from './image-search.js';
 import { resolveErrorBudget, validateResearchArgs, validateScrapeArgs } from './budget-args.js';
 import { DocumentStore } from './document-store.js';
-import { flattenPackedSource, packBudgetedResponse, packQuickResearch, packSectionIndex } from './response-packer.js';
+import { flattenPackedSource as flatten, packBudgetedResponse as packResponse, packQuickResearch as packQuick, packSectionIndex as packIndex } from './response-packer.js';
 import { attachResponseBudget, boundUpstreamError, compactUntrustedText, countResponseTokens, DEFAULT_MAX_TOKENS, isStableErrorCode, prepareSafeErrorPayload } from './token-budget.js';
 import express from 'express';
 import http from 'http';
 
 config();
+
+const parseDocumentSections = timedFunction('mcp.parse', parseSections);
+const rankDocumentSections = timedFunction('mcp.rank', rankSections);
+// Inclusive packing includes exact token-budget work and final serialization.
+// These spans are parents, not additive CPU buckets.
+const packBudgetedResponse = timedFunction('mcp.pack', packResponse, true);
+const flattenPackedSource = timedFunction('mcp.pack', flatten, true);
+const packQuickResearch = timedFunction('mcp.pack', packQuick, true);
+const packSectionIndex = timedFunction('mcp.pack', packIndex, true);
+const discoverUrls: typeof discover = (options) => timedAsync('mcp.discovery', () => discover(options), undefined, true);
 
 // ── Module-level constants ────────────────────────────────────────────
 const DEFAULT_LIMIT       = Number(process.env.WEB_SEARCH_LIMIT)          || 25;
@@ -54,9 +65,15 @@ const RESEARCH_MAX_RESULTS_SINGLE  = 3;
 const RESEARCH_MAX_RESULTS_MULTI   = 5;
 const RESEARCH_SCRAPE_TIMEOUT_MS   = Number(process.env.MCP_RESEARCH_SCRAPE_TIMEOUT_MS) || 3000;
 const RESEARCH_NORMAL_POOL_SIZE    = 15;
-const RESEARCH_CACHE_PREFIX        = 'research:v5';
+const RESEARCH_CACHE_PREFIX        = 'research:v6';
 const FOURGET_PRIMARY_TIMEOUT_MS   = Number(process.env.MCP_FOURGET_PRIMARY_TIMEOUT_MS) || 1500;
 const FOURGET_MIN_RESULTS          = Number(process.env.MCP_FOURGET_MIN_RESULTS) || 5;
+
+function scrapeTimingStatus(result: ScrapeClientResponse) {
+  if (!result.success) return errorTimingStatus({ message: result.error });
+  const outcome = scrapeOutcome(result);
+  return outcome === 'degraded' ? 'partial' : outcome === 'success' ? 'success' : 'error';
+}
 
 // ── Server class ──────────────────────────────────────────────────────
 export class SearXNGMCPServer {
@@ -166,16 +183,17 @@ export class SearXNGMCPServer {
         const args = req.body?.arguments || req.body?.args || req.body?.params || {};
         if (!toolName) return res.status(400).json({ ok: false, error: 'tool name required' });
 
+        const timedCall = <T>(work: () => Promise<T>) => withSearchTiming(req.body?._meta, toolName, work);
         try {
           switch (toolName) {
             case 'search_web':
-              return res.json({ ok: true, result: await this.handleSearchWeb(args) });
+              return res.json({ ok: true, result: await timedCall(() => this.handleSearchWeb(args)) });
             case 'scrape_url':
-              return res.json({ ok: true, result: await this.handleScrapeUrl(args) });
+              return res.json({ ok: true, result: await timedCall(() => this.handleScrapeUrl(args)) });
             case 'search_and_scrape':
-              return res.json({ ok: true, result: await this.handleSearchAndScrape(args) });
+              return res.json({ ok: true, result: await timedCall(() => this.handleSearchAndScrape(args)) });
             case 'search_images':
-              return res.json({ ok: true, result: await this.handleSearchImages(args) });
+              return res.json({ ok: true, result: await timedCall(() => timedAsync('mcp.images.total', () => this.handleSearchImages(args), responseTimingStatus, true)) });
             default:
               return res.status(404).json({ ok: false, error: 'tool not supported via HTTP proxy' });
           }
@@ -199,30 +217,32 @@ export class SearXNGMCPServer {
   }
 
   private mcpJson(payload: Record<string, unknown>, maxTokens: number = DEFAULT_MAX_TOKENS) {
-    const isError = typeof payload.error === 'string';
-    const safe = isError ? prepareSafeErrorPayload(payload) : { ...payload };
-    if (typeof safe.query === 'string') {
-      safe.query = compactUntrustedText(safe.query);
-    }
-    let packed = attachResponseBudget(safe, maxTokens);
-    let text = JSON.stringify(packed, null, 2);
-    if (countResponseTokens(text) > maxTokens) {
-      packed = attachResponseBudget(prepareSafeErrorPayload(safe), maxTokens);
-      text = JSON.stringify(packed, null, 2);
-    }
-    if (countResponseTokens(text) > maxTokens) {
-      const code = typeof safe.error === 'string' && isStableErrorCode(safe.error)
-        ? safe.error
-        : (isError ? 'upstream_error' : 'budget_too_small');
-      packed = attachResponseBudget({
-        error: code,
-        ...(typeof safe.required_tokens === 'number' ? { required_tokens: safe.required_tokens } : {}),
-      }, maxTokens);
-      text = JSON.stringify(packed, null, 2);
-    }
-    return {
-      content: [{ type: 'text', text }],
-    };
+    return timedSync('mcp.pack', () => {
+      const isError = typeof payload.error === 'string';
+      const safe = isError ? prepareSafeErrorPayload(payload) : { ...payload };
+      if (typeof safe.query === 'string') {
+        safe.query = compactUntrustedText(safe.query);
+      }
+      let packed = attachResponseBudget(safe, maxTokens);
+      let text = timingStringify(packed, null, 2);
+      if (countResponseTokens(text) > maxTokens) {
+        packed = attachResponseBudget(prepareSafeErrorPayload(safe), maxTokens);
+        text = timingStringify(packed, null, 2);
+      }
+      if (countResponseTokens(text) > maxTokens) {
+        const code = typeof safe.error === 'string' && isStableErrorCode(safe.error)
+          ? safe.error
+          : (isError ? 'upstream_error' : 'budget_too_small');
+        packed = attachResponseBudget({
+          error: code,
+          ...(typeof safe.required_tokens === 'number' ? { required_tokens: safe.required_tokens } : {}),
+        }, maxTokens);
+        text = timingStringify(packed, null, 2);
+      }
+      return {
+        content: [{ type: 'text', text }],
+      };
+    }, true);
   }
 
   private canonicalSourceData(retained: { markdown: string; title: string }) {
@@ -254,9 +274,9 @@ export class SearXNGMCPServer {
     }
   }
 
-  private retainDocument(url: string, title: string, markdown: string) {
+  private retainDocument(url: string, title: string, markdown: string, fetch?: FetchProvenance, reuseByUrl = true) {
     const sections = parseDocumentSections(markdown);
-    const saved = this.getDocumentStore().save({ url, title, markdown, sections });
+    const saved = timedSync('mcp.document.save', () => this.getDocumentStore().save({ url, title, markdown, sections, fetch, reuseByUrl }));
     if (!saved.ok) {
       return {
         url,
@@ -288,6 +308,7 @@ export class SearXNGMCPServer {
       sections: ReturnType<typeof parseDocumentSections>;
       saved_at?: number;
       expires_at?: number;
+      fetch?: FetchProvenance;
     },
     request: { query?: string; section_ids?: string[]; list_sections: boolean; section_offset?: number; max_tokens: number; content_mode: ContentMode },
   ) {
@@ -330,6 +351,7 @@ export class SearXNGMCPServer {
         url: document.url,
         title: document.title,
         success: true,
+        fetch: document.fetch,
         document_id: document.document_id,
         saved_at: document.saved_at,
         expires_at: document.expires_at,
@@ -396,24 +418,28 @@ export class SearXNGMCPServer {
   private async cachedScrapeUrl(
     url: string,
     formats: string[],
-    timeout: number = 30000
+    timeout: number = 30000,
+    controls: Pick<ScrapeOptions, 'wait_for' | 'renderJs' | 'onlyMainContent' | 'renderer'> = {},
   ): Promise<ScrapeClientResponse> {
     const normalized = normalizeUrl(url);
-    const cacheKey = `scrape_url:v2:${normalized}:${(formats || ['markdown']).join(',')}:${timeout}`;
-    const cached = await this.cache.get<ScrapeClientResponse>(cacheKey);
-    if (cached) return cached;
+    const cacheKey = `scrape_url:v3:${normalized}:${(formats || ['markdown']).join(',')}:${timeout}:${JSON.stringify(controls)}`;
+    const cached = await timedAsync('mcp.cache.get', () => this.cache.get<ScrapeClientResponse>(cacheKey), value => value ? 'hit' : 'miss', true);
+    if (cached) {
+      skipTiming('mcp.crawl.page', 'cached');
+      return cached;
+    }
 
-    const result = await this.getScrapeClient().scrape(url, {
+    const result = await timedAsync('mcp.crawl.page', () => this.getScrapeClient().scrape(url, {
       formats: formats || ['markdown'],
       timeout,
-      wait_for: 0,
+      ...controls,
       proxy_url: process.env.PROXY_URL,
-    });
+    }), scrapeTimingStatus);
 
-    const wordCount = result.data?.metadata?.word_count || 0;
-    const markdown = typeof result.data?.markdown === 'string' ? result.data.markdown.trim() : '';
-    if (result.success && (wordCount > 0 || markdown.length > 0)) {
-      await this.cache.set(cacheKey, result, URL_SCRAPE_CACHE_TTL_MS);
+    if (scrapeCacheEligible(result)) {
+      await timedAsync('mcp.cache.set', () => this.cache.set(cacheKey, result, URL_SCRAPE_CACHE_TTL_MS), undefined, true);
+    } else {
+      skipTiming('mcp.cache.set');
     }
     return result;
   }
@@ -462,8 +488,7 @@ export class SearXNGMCPServer {
                 },
                 scraper: {
                   type: 'string',
-                  description: '4get scraper engine (e.g., "ddg", "google_cse", "startpage", "brave"). Default: "ddg"',
-                  default: DEFAULT_FOURGET_SCRAPER,
+                  description: '4get scraper engine (e.g., "ddg", "google_cse", "startpage", "brave"). Defaults: "ddg" for web and news',
                 },
                 language: {
                   type: 'string',
@@ -551,8 +576,7 @@ export class SearXNGMCPServer {
                 },
                 scraper: {
                   type: 'string',
-                  description: '4get scraper engine (e.g., "ddg", "google_cse", "startpage", "brave"). Default: "ddg"',
-                  default: DEFAULT_FOURGET_SCRAPER,
+                  description: '4get scraper engine (e.g., "ddg", "google_cse", "startpage", "brave"). Defaults: "ddg" for web and news',
                 },
               },
               required: ['query'],
@@ -599,7 +623,6 @@ export class SearXNGMCPServer {
                 wait_for: {
                   type: 'number',
                   description: 'Wait time in milliseconds',
-                  default: 0,
                 },
                 timeout: {
                   type: 'number',
@@ -626,7 +649,7 @@ export class SearXNGMCPServer {
       };
     });
 
-    target.setRequestHandler(CallToolRequestSchema, async (request) => {
+    target.setRequestHandler(CallToolRequestSchema, async (request) => withSearchTiming(request.params._meta, request.params.name, async () => {
       const { name, arguments: args } = request.params;
 
       try {
@@ -634,7 +657,7 @@ export class SearXNGMCPServer {
           case 'search_web':
             return await this.handleSearchWeb(args);
           case 'search_images':
-            return await this.handleSearchImages(args);
+            return await timedAsync('mcp.images.total', () => this.handleSearchImages(args), responseTimingStatus, true);
           case 'research':
             return await this.handleResearch(args);
           case 'scrape_url':
@@ -646,7 +669,7 @@ export class SearXNGMCPServer {
         logger.error(`Error executing tool ${name}:`, error);
         throw error;
       }
-    });
+    }));
   }
 
   // ── Tool handlers ───────────────────────────────────────────────────
@@ -656,7 +679,8 @@ export class SearXNGMCPServer {
    */
   private async handleSearchWeb(args: any) {
     const { query, maxResults, categories, engines, language } = args;
-    const scraper = args.scraper || DEFAULT_FOURGET_SCRAPER;
+    const news = isFourgetNewsRoute({ categories, engines, language });
+    const scraper = args.scraper || (news ? DEFAULT_FOURGET_NEWS_SCRAPER : DEFAULT_FOURGET_SCRAPER);
 
     logger.info(`Searching web (4get primary): ${query}`);
 
@@ -670,9 +694,13 @@ export class SearXNGMCPServer {
       language || 'en',
       scraper,
       limit,
+      ...(news ? ['fourget-news:v1', scraper] : []),
     ]);
-    const cached = await this.cache.get(cacheKey);
-    if (cached) return cached;
+    const cached = await timedAsync('mcp.cache.get', () => this.cache.get(cacheKey), value => value ? 'hit' : 'miss', true);
+    if (cached) {
+      cachedTiming(['mcp.discovery', 'mcp.provider.fourget', 'mcp.provider.searxng', 'mcp.serialization', 'mcp.cache.set']);
+      return cached;
+    }
 
     const discovery = await discoverUrls({
       query,
@@ -698,7 +726,7 @@ export class SearXNGMCPServer {
       content: [
         {
           type: 'text' as const,
-          text: JSON.stringify(
+          text: timingStringify(
             {
               query,
               total_results: discovery.results.length,
@@ -723,7 +751,7 @@ export class SearXNGMCPServer {
       ],
     };
 
-    await this.cache.set(cacheKey, response, SEARCH_CACHE_TTL_MS);
+    await timedAsync('mcp.cache.set', () => this.cache.set(cacheKey, response, SEARCH_CACHE_TTL_MS), undefined, true);
     return response;
   }
 
@@ -742,8 +770,11 @@ export class SearXNGMCPServer {
       scraper,
       maxResults,
     }));
-    const cached = await this.cache.get(cacheKey);
-    if (cached) return cached;
+    const cached = await timedAsync('mcp.cache.get', () => this.cache.get(cacheKey), value => value ? 'hit' : 'miss', true);
+    if (cached) {
+      cachedTiming(['mcp.images.primary', 'mcp.images.fallback', 'mcp.images.normalize', 'mcp.pack', 'mcp.serialization', 'mcp.cache.set']);
+      return cached;
+    }
 
     const discovery = await searchImages({
       query,
@@ -765,7 +796,7 @@ export class SearXNGMCPServer {
       },
     });
 
-    await this.cache.set(cacheKey, response, SEARCH_CACHE_TTL_MS);
+    await timedAsync('mcp.cache.set', () => this.cache.set(cacheKey, response, SEARCH_CACHE_TTL_MS), undefined, true);
     return response;
   }
 
@@ -773,14 +804,19 @@ export class SearXNGMCPServer {
    * Scrape a URL or read a saved document. Validation happens before any crawl.
    */
   private async handleScrapeUrl(args: any) {
-    const parsed = validateScrapeArgs(args);
+    return withSourceTiming(0, () => this.handleIndexedScrapeUrl(args));
+  }
+
+  private async handleIndexedScrapeUrl(args: any) {
+    const parsed = timedSync('mcp.validation', () => validateScrapeArgs(args), false, result => result.ok ? 'success' : 'validation_error');
     if (!parsed.ok) {
+      for (const stage of ['mcp.discovery', 'mcp.crawl.batch', 'mcp.crawl.page', 'mcp.parse', 'mcp.rank', 'mcp.cache.get', 'mcp.cache.set']) skipTiming(stage);
       return this.mcpJson({ error: parsed.error, message: parsed.message }, resolveErrorBudget(args));
     }
     const request = parsed.value;
 
     if (request.document_id) {
-      const lookedUp = this.getDocumentStore().get(request.document_id);
+      const lookedUp = timedSync('mcp.document.get', () => this.getDocumentStore().get(request.document_id!));
       if (!lookedUp.ok) {
         return this.mcpJson({
           error: 'document_unavailable',
@@ -789,12 +825,16 @@ export class SearXNGMCPServer {
           guidance: 'Saved document is missing or expired. Call scrape_url with the original url.',
         }, request.max_tokens);
       }
+      skipTiming('mcp.crawl.page', 'cached');
+      skipTiming('mcp.parse', 'cached');
       return this.packSavedDocument(lookedUp.document, request);
     }
 
     const url = request.url as string;
-    const existing = this.getDocumentStore().getByUrl(url);
-    if (existing.ok) {
+    const existing = timedSync('mcp.document.get', () => this.getDocumentStore().getByUrl(url));
+    if (existing.ok && !existing.document.fetch?.outcome && args.wait_for === undefined && args.renderJs === undefined && args.onlyMainContent === undefined && args.renderer === undefined) {
+      skipTiming('mcp.crawl.page', 'cached');
+      skipTiming('mcp.parse', 'cached');
       return this.packSavedDocument(existing.document, request);
     }
 
@@ -804,22 +844,33 @@ export class SearXNGMCPServer {
       const result = await this.cachedScrapeUrl(
         url,
         args.formats || ['markdown'],
-        args.timeout || 30000
+        args.timeout || 30000,
+        {
+          ...(args.wait_for !== undefined ? { wait_for: args.wait_for } : {}),
+          ...(args.renderJs !== undefined ? { renderJs: args.renderJs } : {}),
+          ...(args.onlyMainContent !== undefined ? { onlyMainContent: args.onlyMainContent } : {}),
+          ...(args.renderer !== undefined ? { renderer: args.renderer } : {}),
+        },
       );
       const markdown = typeof result.data?.markdown === 'string' ? result.data.markdown : '';
       const title = (result.data?.metadata as { title?: string } | undefined)?.title || url;
-      if (!result.success || !markdown.trim()) {
+      const outcome = scrapeOutcome(result);
+      if (!result.success || !markdown.trim() || outcome === 'unusable' || outcome === 'failed') {
+        skipTiming('mcp.parse');
+        skipTiming('mcp.rank');
         const bounded = boundUpstreamError(
-          result.success ? 'Empty extraction' : (result.error || 'scrape_failed'),
+          !result.success ? (result.error || 'scrape_failed') : !markdown.trim() ? 'Empty extraction' : outcome === 'unusable' ? 'No usable content (known shell or block)' : 'scrape_failed',
         );
         return this.mcpJson({
           success: false,
           url,
           error: bounded.error,
+          fetch: scrapeProvenance(result),
           ...(bounded.diagnostic ? { diagnostic: bounded.diagnostic } : {}),
         }, request.max_tokens);
       }
-      const retained = this.retainDocument(url, title, markdown);
+      const explicitControls = args.wait_for !== undefined || args.renderJs !== undefined || args.onlyMainContent !== undefined || args.renderer !== undefined;
+      const retained = this.retainDocument(url, title, markdown, scrapeProvenance(result), !explicitControls);
       if (request.list_sections) {
         if (!retained.document_id) {
           return this.mcpJson({
@@ -836,11 +887,14 @@ export class SearXNGMCPServer {
           sections: retained.sections,
           saved_at: retained.saved_at,
           expires_at: retained.expires_at,
+          fetch: scrapeProvenance(result),
         }, request);
       }
       return this.packScrapedDocument(result, retained, request);
     } catch (error) {
       logger.error('CRW scrape failed:', error);
+      skipTiming('mcp.parse');
+      skipTiming('mcp.rank');
       return this.mcpJson({
         success: false,
         url,
@@ -856,7 +910,8 @@ export class SearXNGMCPServer {
   private async handleSearchAndScrape(args: any) {
     const { query, maxResults, mode, scrapeAll, categories, formats, content_mode } = args;
     const contentMode = content_mode || 'full';
-    const scraper = args.scraper || DEFAULT_FOURGET_SCRAPER;
+    const news = isFourgetNewsRoute({ categories });
+    const scraper = args.scraper || (news ? DEFAULT_FOURGET_NEWS_SCRAPER : DEFAULT_FOURGET_SCRAPER);
     const isDeep = mode === 'deep';
     const perUrlTimeout = isDeep ? DEEP_PER_URL_TIMEOUT_MS : CRAWL_PER_URL_TIMEOUT_MS;
     const batchTimeout = isDeep ? DEEP_BATCH_TIMEOUT_MS : CRAWL_BATCH_TIMEOUT_MS;
@@ -878,8 +933,9 @@ export class SearXNGMCPServer {
         formatKey,
         contentMode,
         scraper,
+        ...(news ? ['fourget-news:v1', scraper] : []),
       ]);
-      const cached = await this.cache.get(cacheKey);
+      const cached = await timedAsync('mcp.cache.get', () => this.cache.get(cacheKey), value => value ? 'hit' : 'miss', true);
       if (cached) return cached;
 
       // 2. Discover URLs through 4get first, with SearXNG fallback
@@ -900,7 +956,7 @@ export class SearXNGMCPServer {
           content: [
             {
               type: 'text',
-              text: JSON.stringify(
+              text: timingStringify(
                 {
                   query,
                   search_results: 0,
@@ -950,7 +1006,7 @@ export class SearXNGMCPServer {
       for (let i = 0; i < urlsToScrape.length; i += poolSize) {
         const batch = urlsToScrape.slice(i, i + poolSize);
         const batchResults = await Promise.allSettled(
-          batch.map((entry) => this.scrapeSingleUrl(entry.url, perUrlTimeout, isDeep, formats))
+          batch.map((entry, offset) => withSourceTiming(i + offset, () => this.scrapeSingleUrl(entry.url, perUrlTimeout, isDeep, formats)))
         );
 
         for (let j = 0; j < batchResults.length; j++) {
@@ -1003,7 +1059,7 @@ export class SearXNGMCPServer {
         content: [
           {
             type: 'text',
-            text: JSON.stringify(
+            text: timingStringify(
               {
                 query,
                 mode: isDeep ? 'deep' : 'quick',
@@ -1054,15 +1110,17 @@ export class SearXNGMCPServer {
    * Breadth: "single" (best result, default), "multi" (all top results)
    */
   private async handleResearch(args: any) {
-    const parsed = validateResearchArgs(args);
+    const parsed = timedSync('mcp.validation', () => validateResearchArgs(args), false, result => result.ok ? 'success' : 'validation_error');
     if (!parsed.ok) {
+      for (const stage of ['mcp.discovery', 'mcp.crawl.batch', 'mcp.crawl.page', 'mcp.parse', 'mcp.rank', 'mcp.cache.get', 'mcp.cache.set']) skipTiming(stage);
       return this.mcpJson({ error: parsed.error, message: parsed.message }, resolveErrorBudget(args));
     }
 
     const { query, depth, breadth, max_results, categories, formats } = args;
     const contentMode = parsed.value.content_mode;
     const maxTokens = parsed.value.max_tokens;
-    const scraper = args.scraper || DEFAULT_FOURGET_SCRAPER;
+    const news = isFourgetNewsRoute({ categories });
+    const scraper = args.scraper || (news ? DEFAULT_FOURGET_NEWS_SCRAPER : DEFAULT_FOURGET_SCRAPER);
     const researchDepth = depth || 'normal';
     const researchBreadth = breadth || 'single';
 
@@ -1089,18 +1147,22 @@ export class SearXNGMCPServer {
       contentMode,
       scraper,
       maxTokens,
+      ...(news ? ['fourget-news:v1', scraper] : []),
     ]);
-    const cached = await this.cache.get(cacheKey);
-    if (cached && this.cachedDocumentIdsLive(cached)) return cached;
+    const cached = await timedAsync('mcp.cache.get', () => this.cache.get(cacheKey), value => value ? 'hit' : 'miss', true);
+    if (cached && this.cachedDocumentIdsLive(cached)) {
+      cachedTiming(['mcp.discovery', 'mcp.provider.fourget', 'mcp.provider.searxng', 'mcp.crawl.batch', 'mcp.crawl.page', 'mcp.parse', 'mcp.rank', 'mcp.pack', 'mcp.serialization', 'mcp.cache.set']);
+      return cached;
+    }
 
     try {
-      // 1. Discover URLs through 4get first, with SearXNG fallback
+      // 1. Retain the full first-page candidate pool. Result and crawl limits
+      // are applied below, without changing provider requests or pagination.
       const discovery = await discoverUrls({
         query,
         fourget: this.fourget,
         searxng: this.searxng,
         scraper,
-        maxResults: 10,
         minFourgetResults: FOURGET_MIN_RESULTS,
         fourgetTimeoutMs: FOURGET_PRIMARY_TIMEOUT_MS,
         categories,
@@ -1131,6 +1193,7 @@ export class SearXNGMCPServer {
 
       // 3. Dispatch by depth
       if (researchDepth === 'quick') {
+        for (const stage of ['mcp.crawl.batch', 'mcp.crawl.page', 'mcp.parse', 'mcp.rank', 'mcp.cache.set']) skipTiming(stage);
         return this.handleQuickResearch(query, researchBreadth, topResults, contentMode,
           discovery.numberOfResults, discovery.unresponsiveEngines, startTime,
           discovery.route, discovery.fallbackReason, maxTokens);
@@ -1235,9 +1298,9 @@ export class SearXNGMCPServer {
 
     for (let i = 0; i < urlsToScrape.length; i += poolSize) {
       const batch = urlsToScrape.slice(i, i + poolSize);
-      const batchResults = await Promise.allSettled(
-        batch.map((entry) => this.scrapeSingleUrl(entry.url, RESEARCH_SCRAPE_TIMEOUT_MS, false, formats))
-      );
+      const batchResults = await timedAsync('mcp.crawl.batch', () => Promise.allSettled(
+        batch.map((entry, offset) => withSourceTiming(i + offset, () => this.scrapeSingleUrl(entry.url, RESEARCH_SCRAPE_TIMEOUT_MS, false, formats)))
+      ), results => results.some(result => result.status === 'rejected' || scrapeTimingStatus(result.value) !== 'success') ? 'partial' : 'success', true);
       settledByIndex.push(...batchResults);
     }
 
@@ -1245,7 +1308,9 @@ export class SearXNGMCPServer {
     const packSources: PackSource[] = [];
     const errors: Array<{ url: string; error: string }> = [];
 
-    const pushFailure = (entry: SelectedSource, errMsg: string) => {
+    const pushFailure = (entry: SelectedSource, errMsg: string, fetch?: FetchProvenance) => {
+      skipTiming('mcp.parse');
+      skipTiming('mcp.rank');
       errors.push({ url: entry.url, error: errMsg });
       packSources.push({
         url: entry.url,
@@ -1254,22 +1319,22 @@ export class SearXNGMCPServer {
         source_type: 'snippet',
         success: false,
         error: errMsg,
+        fetch,
         sections: [],
         ranked: [],
       });
     };
 
-    for (let index = 0; index < selected.length; index++) {
-      const entry = selected[index];
+    selected.forEach((entry, index) => withSourceTiming(index, () => {
       const settled = settledByIndex[index];
       if (!settled) {
         pushFailure(entry, 'Scrape failed');
-        continue;
+        return;
       }
 
       if (settled.status === 'rejected') {
         pushFailure(entry, settled.reason?.message || 'Scrape failed');
-        continue;
+        return;
       }
 
       const scrapeData = settled.value.data;
@@ -1277,16 +1342,19 @@ export class SearXNGMCPServer {
       const markdown = typeof scrapeData?.markdown === 'string' ? scrapeData.markdown.trim() : '';
       const extracted = wordCount > 0 || markdown.length > 0;
 
-      if (!settled.value.success || !extracted) {
+      const outcome = scrapeOutcome(settled.value);
+      if (!settled.value.success || !extracted || outcome === 'unusable' || outcome === 'failed') {
         pushFailure(
           entry,
-          settled.value.success ? 'Empty extraction' : (settled.value.error || 'Scrape failed'),
+          !settled.value.success ? (settled.value.error || 'Scrape failed') : !extracted ? 'Empty extraction' : outcome === 'unusable' ? 'No usable content (known shell or block)' : 'Scrape failed',
+          scrapeProvenance(settled.value),
         );
-        continue;
+        return;
       }
 
       const originalMarkdown = typeof scrapeData?.markdown === 'string' ? scrapeData.markdown : markdown;
-      const retained = this.retainDocument(entry.url, entry.title, originalMarkdown);
+      if (outcome === 'degraded') errors.push({ url: entry.url, error: 'Degraded extraction (render fallback or incomplete content)' });
+      const retained = this.retainDocument(entry.url, entry.title, originalMarkdown, scrapeProvenance(settled.value));
       packSources.push({
         url: retained.url,
         title: retained.title,
@@ -1294,6 +1362,7 @@ export class SearXNGMCPServer {
         source_type: 'scraped',
         success: true,
         fetch: scrapeProvenance(settled.value),
+        ...(outcome === 'degraded' ? { error: 'Degraded extraction (render fallback or incomplete content)' } : {}),
         document_id: retained.document_id,
         read_more_unavailable: retained.read_more_unavailable,
         saved_at: retained.saved_at,
@@ -1303,7 +1372,7 @@ export class SearXNGMCPServer {
         sections: retained.sections,
         ranked: rankDocumentSections(retained.sections, query),
       });
-    }
+    }));
 
     const store = this.getDocumentStore();
     for (const source of packSources) {
@@ -1336,7 +1405,9 @@ export class SearXNGMCPServer {
     const response = { content: [{ type: 'text', text: packed.text }] };
 
     if (errors.length === 0 && !('error' in packed.payload)) {
-      await this.cache.set(cacheKey, response, COMPOSITE_CACHE_TTL_MS);
+      await timedAsync('mcp.cache.set', () => this.cache.set(cacheKey, response, COMPOSITE_CACHE_TTL_MS), undefined, true);
+    } else {
+      skipTiming('mcp.cache.set');
     }
     return response;
   }

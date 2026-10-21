@@ -2,6 +2,7 @@ import axios from 'axios';
 import { logger } from './logger.js';
 
 export const DEFAULT_FOURGET_SCRAPER = 'ddg';
+export const DEFAULT_FOURGET_NEWS_SCRAPER = 'ddg';
 
 /** Raw 4get web result before processing */
 interface FourgetRawDescriptionItem {
@@ -81,6 +82,32 @@ function unixToISO(ts: number | null | undefined): string | null {
   return date.toISOString();
 }
 
+/** News scrapers return untrusted rows; Startpage sometimes sends a year as a timestamp. */
+function normalizeNewsRows(raw: unknown): FourgetWebResult[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.flatMap((row) => {
+    if (!row || typeof row.title !== 'string' || typeof row.url !== 'string') return [];
+    const title = row.title.trim();
+    const url = row.url.trim();
+    if (!title) return [];
+    try {
+      if (!['http:', 'https:'].includes(new URL(url).protocol)) return [];
+    } catch {
+      return [];
+    }
+    const description = typeof row.description === 'string' ? row.description
+      : Array.isArray(row.description)
+        ? row.description.map((item: unknown) => item && typeof item === 'object' && 'value' in item
+          && typeof item.value === 'string' ? item.value : '').join('')
+        : '';
+    const ts = row.date;
+    const validSeconds = typeof ts === 'number' && Number.isInteger(ts)
+      && ts >= -62135596800 && ts <= 253402300799
+      && !(ts >= 1000 && ts <= 9999);
+    return [{ title, url, description, date: validSeconds ? unixToISO(ts) : null, type: 'news' }];
+  });
+}
+
 export class FourgetClient {
   private baseUrl: string;
 
@@ -130,6 +157,31 @@ export class FourgetClient {
       logger.error(`4get search error for "${query}":`, error);
       throw error;
     }
+  }
+
+  async searchNews(
+    query: string,
+    scraper: string = DEFAULT_FOURGET_NEWS_SCRAPER,
+    timeoutMs: number = 1500,
+  ): Promise<FourgetSearchResponse> {
+    const response = await axios.get<{ status: string; news?: FourgetRawWebResult[]; npt?: string }>(
+      `${this.baseUrl}/api/v1/news`,
+      {
+        params: { s: query, scraper, nsfw: 'no' },
+        headers: {
+          'Accept': 'application/json',
+          'User-Agent': 'SearXNG-CRW-MCP/3.0',
+        },
+        timeout: timeoutMs,
+      },
+    );
+    const data = response.data;
+    return {
+      status: data.status,
+      web: normalizeNewsRows(data.news),
+      answer: [],
+      npt: data.npt || '',
+    };
   }
 
   async searchImages(

@@ -170,7 +170,7 @@ describe('discoverUrls', () => {
       maxResults: 10,
       minFourgetResults: 5,
       fourgetTimeoutMs: 50,
-      categories: 'news',
+      categories: 'science',
       language: 'en',
     });
 
@@ -355,7 +355,7 @@ describe('discoverUrls', () => {
       maxResults: 10,
       minFourgetResults: 5,
       fourgetTimeoutMs: 50,
-      categories: 'news',
+      categories: 'science',
     })).rejects.toThrow('searxng-error');
 
     expect(fourget.search).not.toHaveBeenCalled();

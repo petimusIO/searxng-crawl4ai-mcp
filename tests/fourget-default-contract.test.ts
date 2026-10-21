@@ -13,8 +13,9 @@ describe('4get default scraper contract', () => {
     expect(indexSource).not.toContain('"brave", "google", "bing"');
   });
 
-  it('uses the shared DDG default in every server path', () => {
-    expect(indexSource.match(/DEFAULT_FOURGET_SCRAPER/g)).toHaveLength(7);
+  it('keeps web/image DDG defaults separate from the news default', () => {
+    expect(indexSource).toContain('const scraper = args.scraper || DEFAULT_FOURGET_SCRAPER;');
+    expect(indexSource).toContain('news ? DEFAULT_FOURGET_NEWS_SCRAPER : DEFAULT_FOURGET_SCRAPER');
   });
 
   it('routes all server discovery through the primary-fallback helper', () => {
@@ -25,7 +26,7 @@ describe('4get default scraper contract', () => {
   it('describes and caches the primary-fallback strategy accurately', () => {
     expect(indexSource).toContain('Search the web using 4get with SearXNG fallback');
     expect(indexSource).not.toContain('search:merged:');
-    expect(indexSource).toContain("const RESEARCH_CACHE_PREFIX        = 'research:v5'");
+    expect(indexSource).toContain("const RESEARCH_CACHE_PREFIX        = 'research:v6'");
     expect(indexSource).toContain("buildCacheKey('search_and_scrape:v4'");
   });
 

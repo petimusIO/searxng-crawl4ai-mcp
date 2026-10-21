@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import type { FetchProvenance } from './scrape-client.js';
 
 export interface StoredSection {
   id: string;
@@ -13,6 +14,7 @@ export interface StoredSection {
 }
 
 export interface StoredDocument {
+  fetch?: FetchProvenance;
   document_id: string;
   url: string;
   title: string;
@@ -64,6 +66,7 @@ function freezeSection(section: StoredSection): StoredSection {
 
 function freezeDocument(document: StoredDocument): StoredDocument {
   return Object.freeze({
+    ...(document.fetch ? { fetch: Object.freeze(structuredClone(document.fetch)) } : {}),
     document_id: document.document_id,
     url: document.url,
     title: document.title,
@@ -76,6 +79,7 @@ function freezeDocument(document: StoredDocument): StoredDocument {
 
 function evidenceBytes(document: StoredDocument): number {
   return Buffer.byteLength(JSON.stringify({
+    fetch: document.fetch,
     document_id: document.document_id,
     url: document.url,
     title: document.title,
@@ -102,6 +106,8 @@ export class DocumentStore {
   }
 
   save(input: {
+    fetch?: FetchProvenance;
+    reuseByUrl?: boolean;
     url: string;
     title: string;
     markdown: string;
@@ -109,10 +115,10 @@ export class DocumentStore {
   }): DocumentSaveResult {
     this.purgeExpired();
 
-    const existingId = this.byUrl.get(input.url);
+    const existingId = input.reuseByUrl === false ? undefined : this.byUrl.get(input.url);
     if (existingId) {
       const existing = this.byId.get(existingId);
-      if (existing && existing.expires_at > this.now()) {
+      if (existing && existing.expires_at > this.now() && !existing.fetch?.outcome && !input.fetch?.outcome) {
         this.touch(existingId);
         return { ok: true, document: existing };
       }
@@ -124,6 +130,7 @@ export class DocumentStore {
 
     const saved_at = this.now();
     const document = freezeDocument({
+      fetch: input.fetch,
       document_id: randomUUID(),
       url: input.url,
       title: input.title,
@@ -143,7 +150,7 @@ export class DocumentStore {
     }
 
     this.byId.set(document.document_id, document);
-    this.byUrl.set(input.url, document.document_id);
+    if (input.reuseByUrl !== false) this.byUrl.set(input.url, document.document_id);
     return { ok: true, document };
   }
 

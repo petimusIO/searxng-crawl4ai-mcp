@@ -1,3 +1,5 @@
+import { timingStringify } from './search-timing.js';
+import type { FetchProvenance } from './scrape-client.js';
 import type { ContentMode } from './content-utils.js';
 import type { DocumentSection, RankedSection } from './passage-extractor.js';
 import {
@@ -25,7 +27,7 @@ export interface PackableSource {
   read_more_unavailable?: boolean;
   saved_at?: number;
   expires_at?: number;
-  fetch?: { status_code?: number; rendered_with?: string; elapsed_ms?: number };
+  fetch?: FetchProvenance;
   data?: Record<string, unknown>;
   markdown?: string;
   sections: DocumentSection[];
@@ -250,7 +252,7 @@ function attach(payload: Record<string, unknown>, limit: number): PackedResponse
   const packed = attachResponseBudget(payload, limit);
   return {
     payload: packed,
-    text: JSON.stringify(packed, null, 2),
+    text: timingStringify(packed, null, 2),
   };
 }
 
@@ -742,7 +744,7 @@ export function packBudgetedResponse(request: PackRequest): PackedResponse {
   const withFull = wantFull ? packSections(request, true) : undefined;
   if (withFull?.kind === 'packed') {
     if (request.deferFinalize) {
-      return { payload: withFull.payload, text: JSON.stringify(withFull.payload, null, 2) };
+      return { payload: withFull.payload, text: timingStringify(withFull.payload, null, 2) };
     }
     return finalizePacked(withFull.payload, request.maxTokens, request.requestedSectionIds);
   }
@@ -758,7 +760,7 @@ export function packBudgetedResponse(request: PackRequest): PackedResponse {
       }
     }
     if (request.deferFinalize) {
-      return { payload: withoutFull.payload, text: JSON.stringify(withoutFull.payload, null, 2) };
+      return { payload: withoutFull.payload, text: timingStringify(withoutFull.payload, null, 2) };
     }
     return finalizePacked(withoutFull.payload, request.maxTokens, request.requestedSectionIds);
   }

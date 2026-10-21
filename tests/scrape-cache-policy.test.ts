@@ -62,7 +62,7 @@ describe('cached scrape policy', () => {
     expect(second).toEqual(short);
     expect(harness.scrapeCalls).toBe(1);
     expect(harness.sets).toHaveLength(1);
-    expect(harness.sets[0].key.startsWith('scrape_url:v2:')).toBe(true);
+    expect(harness.sets[0].key.startsWith('scrape_url:v3:')).toBe(true);
     expect(harness.sets[0].key).not.toContain('scrape_url:https://');
     expect(harness.sets[0].ttl).toBe(86_400_000);
   });

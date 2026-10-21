@@ -59,7 +59,8 @@ services:
 
   # Lightpanda - lightweight headless browser for JS rendering
   lightpanda:
-    image: lightpanda/browser:nightly
+    image: lightpanda/browser@sha256:c427b144613fbf099868c5ab54be509741c8535def6a40fd0b62360658e279d1
+    command: ["/bin/lightpanda", "serve", "--host", "0.0.0.0", "--port", "9222", "--advertise-host", "lightpanda", "--log-level", "info"]
     container_name: lightpanda
     networks:
       - search-net
@@ -67,7 +68,9 @@ services:
 
   # CRW - Content Retrieval Worker (replaces Crawl4AI)
   crw:
-    image: ghcr.io/us/crw:latest
+    build:
+      context: .
+      dockerfile: docker/crw-timing/Dockerfile
     container_name: crw
     ports:
       - "8001:3000"    # CRW container port is 3000

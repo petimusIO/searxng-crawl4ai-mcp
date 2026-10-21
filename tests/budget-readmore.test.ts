@@ -254,7 +254,7 @@ describe('research budget and saved-document handles', () => {
     );
     expect(first.body.budget.used).toBe(countResponseTokens(first.text));
     expect(first.body.budget.used).toBeLessThanOrEqual(6000);
-    expect(harness.sets.some((entry) => String(entry.key).startsWith('research:v5'))).toBe(true);
+    expect(harness.sets.some((entry) => String(entry.key).startsWith('research:v6'))).toBe(true);
 
     const cached = decode(await harness.server.handleResearch({ query: 'fastify listen' }));
     expect(cached.body.results[0].document_id).toBe(first.body.results[0].document_id);

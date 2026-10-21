@@ -14,7 +14,7 @@ describe('per-URL scrape cache key', () => {
     const body = cachedScrapeUrlBody();
 
     expect(body).toContain(
-      "const cacheKey = `scrape_url:v2:${normalized}:${(formats || ['markdown']).join(',')}:${timeout}`;"
+      "const cacheKey = `scrape_url:v3:${normalized}:${(formats || ['markdown']).join(',')}:${timeout}:${JSON.stringify(controls)}`;"
     );
     expect(body).toContain('this.cache.get<ScrapeClientResponse>(cacheKey)');
     expect(body).toContain('this.cache.set(cacheKey, result, URL_SCRAPE_CACHE_TTL_MS)');

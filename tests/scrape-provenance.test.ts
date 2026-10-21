@@ -54,8 +54,8 @@ describe('scrape provenance: client mapping', () => {
 });
 
 describe('scrapeProvenance', () => {
-  it('returns undefined when no data or no fields were recorded', () => {
-    expect(scrapeProvenance({ success: true, url: 'https://x.test' })).toBeUndefined();
+  it('marks missing extraction unusable and omits provenance on clean pages without fields', () => {
+    expect(scrapeProvenance({ success: true, url: 'https://x.test' })).toEqual({ outcome: 'unusable' });
     expect(scrapeProvenance({
       success: true,
       url: 'https://x.test',
@@ -83,7 +83,7 @@ describe('scrapeProvenance', () => {
       },
     });
 
-    expect(provenance).toEqual({ status_code: 404, elapsed_ms: 87 });
+    expect(provenance).toEqual({ status_code: 404, elapsed_ms: 87, outcome: 'failed' });
   });
 });
 

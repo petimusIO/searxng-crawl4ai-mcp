@@ -1,4 +1,5 @@
-import type { FourgetSearchResponse } from './fourget-client.js';
+import { skipTiming, timedAsync } from './search-timing.js';
+import { DEFAULT_FOURGET_NEWS_SCRAPER, DEFAULT_FOURGET_SCRAPER, type FourgetSearchResponse } from './fourget-client.js';
 import type { SearXNGSearchResponse } from './searxng-client.js';
 import { mergeSearchResults, type UnifiedResult } from './search-merger.js';
 import { normalizeUrl } from './url-normalizer.js';
@@ -7,6 +8,7 @@ export type DiscoveryRoute = 'fourget' | 'fourget-partial' | 'searxng-fallback' 
 
 interface FourgetSearchClient {
   search(query: string, scraper?: string, timeoutMs?: number): Promise<FourgetSearchResponse>;
+  searchNews?(query: string, scraper?: string, timeoutMs?: number): Promise<FourgetSearchResponse>;
 }
 
 interface SearxngSearchClient {
@@ -27,8 +29,9 @@ export interface DiscoverUrlsOptions {
   query: string;
   fourget: FourgetSearchClient;
   searxng: SearxngSearchClient;
-  scraper: string;
-  maxResults: number;
+  scraper?: string;
+  // Optional presentation limit. Research retains the complete first-page pool.
+  maxResults?: number;
   minFourgetResults: number;
   fourgetTimeoutMs: number;
   categories?: string;
@@ -43,6 +46,15 @@ export interface DiscoverUrlsResult {
   numberOfResults: number;
   unresponsiveEngines: string[];
   sourcesConsulted: { fourget: boolean; searxng: boolean };
+}
+
+/** Only English news/general requests without explicit SearXNG engines use 4get news. */
+export function isFourgetNewsRoute(options: Pick<DiscoverUrlsOptions, 'categories' | 'engines' | 'language'>): boolean {
+  const categories = (options.categories || '').split(',').map(category => category.trim()).filter(Boolean);
+  return categories.includes('news')
+    && categories.every(category => category === 'news' || category === 'general')
+    && !options.engines?.trim()
+    && (!options.language || /^en(?:-|$)/i.test(options.language.trim()));
 }
 
 function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
@@ -105,14 +117,15 @@ export async function discoverUrls(options: DiscoverUrlsOptions): Promise<Discov
     route: 'searxng-fallback' | 'searxng-required',
     reason: string,
   ): Promise<DiscoverUrlsResult> => {
+    if (route === 'searxng-required') skipTiming('mcp.provider.fourget');
     try {
-      const response = await options.searxng.search(options.query, {
+      const response = await timedAsync('mcp.provider.searxng', () => options.searxng.search(options.query, {
         categories: options.categories,
         engines: options.engines,
         language: options.language || 'en',
         pageno: 1,
         format: 'json',
-      });
+      }));
       const results = (response.results || []).filter((result) => result.title && result.url);
 
       return {
@@ -143,7 +156,7 @@ export async function discoverUrls(options: DiscoverUrlsOptions): Promise<Discov
     .split(',')
     .map((category) => category.trim())
     .filter(Boolean);
-  if (categories.some((category) => category !== 'general')) {
+  if (categories.some((category) => category !== 'general' && category !== 'news')) {
     return useSearxng('searxng-required', 'required-options:categories');
   }
   if (options.engines?.trim()) {
@@ -154,13 +167,23 @@ export async function discoverUrls(options: DiscoverUrlsOptions): Promise<Discov
   }
 
   try {
-    const fourgetResponse = await withTimeout(
-      options.fourget.search(options.query, options.scraper, options.fourgetTimeoutMs),
+    const news = isFourgetNewsRoute(options);
+    const scraper = options.scraper || (news ? DEFAULT_FOURGET_NEWS_SCRAPER : DEFAULT_FOURGET_SCRAPER);
+    const search = news ? options.fourget.searchNews : options.fourget.search;
+    if (!search) throw new Error('news-unavailable');
+    const fourgetResponse = await timedAsync('mcp.provider.fourget', () => withTimeout(
+      search.call(options.fourget, options.query, scraper, options.fourgetTimeoutMs),
       options.fourgetTimeoutMs,
-    );
-    fourgetResults = distinctUsableFourgetResults(fourgetResponse.web);
+    ));
+    // Harden the new news boundary without changing general-web failure semantics.
+    const rows = news
+      ? (Array.isArray(fourgetResponse.web) ? fourgetResponse.web.filter(row => row
+        && typeof row.title === 'string' && typeof row.url === 'string') : [])
+      : fourgetResponse.web;
+    fourgetResults = distinctUsableFourgetResults(rows);
 
     if (fourgetResponse.status === 'ok' && fourgetResults.length >= options.minFourgetResults) {
+      skipTiming('mcp.provider.searxng');
       return {
         results: mergeSearchResults([], fourgetResults, { maxResults: options.maxResults }),
         route: 'fourget',
