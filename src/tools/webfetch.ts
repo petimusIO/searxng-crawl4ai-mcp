@@ -16,6 +16,10 @@ const packBudgetedResponse = timedFunction('mcp.pack', packResponse, true);
 const flattenPackedSource = timedFunction('mcp.pack', flatten, true);
 const packSectionIndex = timedFunction('mcp.pack', packIndex, true);
 const URL_SCRAPE_CACHE_TTL_MS = Number(process.env.MCP_URL_SCRAPE_CACHE_TTL_MS) || 86_400_000;
+const configuredWebFetchTimeout = Number(process.env.MCP_WEBFETCH_TIMEOUT_MS);
+export const DEFAULT_WEBFETCH_TIMEOUT_MS = Number.isSafeInteger(configuredWebFetchTimeout) && configuredWebFetchTimeout > 0
+  ? configuredWebFetchTimeout
+  : 3000;
 function scrapeTimingStatus(result: ScrapeClientResponse) {
   if (!result.success) return errorTimingStatus({ message: result.error });
   const outcome = scrapeOutcome(result);
@@ -187,7 +191,7 @@ export class WebFetchTool {
   private async cachedScrapeUrl(
     url: string,
     formats: string[],
-    timeout: number = 30000,
+    timeout: number = DEFAULT_WEBFETCH_TIMEOUT_MS,
     controls: Pick<ScrapeOptions, 'wait_for' | 'renderJs' | 'onlyMainContent' | 'renderer'> = {},
   ): Promise<ScrapeClientResponse> {
     const normalized = normalizeUrl(url);
@@ -254,7 +258,7 @@ export class WebFetchTool {
       const result = await this.cachedScrapeUrl(
         url,
         args.formats || ['markdown'],
-        args.timeout || 30000,
+        args.timeout || DEFAULT_WEBFETCH_TIMEOUT_MS,
         {
           ...(args.wait_for !== undefined ? { wait_for: args.wait_for } : {}),
           ...(args.renderJs !== undefined ? { renderJs: args.renderJs } : {}),

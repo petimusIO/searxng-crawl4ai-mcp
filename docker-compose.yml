@@ -72,8 +72,6 @@ services:
       context: .
       dockerfile: docker/crw-timing/Dockerfile
     container_name: crw
-    ports:
-      - "8001:3000"    # CRW container port is 3000
     environment:
       - CRW_SEARCH__SEARXNG_URL=http://searxng:8080   # double underscore
       - CRW_CRAWLER__STEALTH__ENABLED=true
@@ -114,6 +112,7 @@ services:
       - CRW_URL=http://crw:3000
       - REDIS_URL=redis://redis:6379/0
       - MCP_HTTP_PORT=3004
+      - MCP_WEBFETCH_TIMEOUT_MS=${MCP_WEBFETCH_TIMEOUT_MS:-3000}
       - MCP_INTERNAL_TOKEN=${MCP_INTERNAL_TOKEN:-}
       - LOG_LEVEL=info
       - FOURGET_URL=http://fourget:80

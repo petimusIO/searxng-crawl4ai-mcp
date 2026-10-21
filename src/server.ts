@@ -7,7 +7,7 @@ import { SearXNGClient } from './searxng-client.js';
 import { FourgetClient } from './fourget-client.js';
 import { RedisCache } from './redis-cache.js';
 import { WebSearchTool } from './tools/websearch.js';
-import { WebFetchTool } from './tools/webfetch.js';
+import { WebFetchTool, DEFAULT_WEBFETCH_TIMEOUT_MS } from './tools/webfetch.js';
 import express from 'express';
 import http from 'http';
 
@@ -246,7 +246,7 @@ export class SearXNGMCPServer {
                 timeout: {
                   type: 'number',
                   description: 'Timeout in milliseconds',
-                  default: 30000,
+                  default: DEFAULT_WEBFETCH_TIMEOUT_MS,
                 },
                 content_mode: {
                   type: 'string',

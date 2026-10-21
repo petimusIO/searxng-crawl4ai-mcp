@@ -1,0 +1,5 @@
+# Explicit local-only CRW debugging: add -f docker-compose.local.yml.
+services:
+  crw:
+    ports:
+      - "127.0.0.1:8001:3000"

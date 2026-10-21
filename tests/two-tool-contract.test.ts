@@ -29,6 +29,15 @@ describe('model-controlled two-tool contract', () => {
     }
   });
 
+  it('defaults URL fetches to a three-second budget and advertises the same timeout', async () => {
+    const h = harness();
+    h.scrape.mockResolvedValue({ success: false, url: 'https://timeout-default.test/page', error: 'blocked fixture' });
+    const list = await h.handlers.get('tools/list')({});
+    expect(list.tools.find((entry: any) => entry.name === 'webfetch').inputSchema.properties.timeout.default).toBe(3000);
+    await h.call('webfetch', { url: 'https://timeout-default.test/page' });
+    expect(h.scrape).toHaveBeenCalledWith('https://timeout-default.test/page', expect.objectContaining({ timeout: 3000 }));
+  });
+
   it('fetches only the chosen URL, defaults to full Markdown and reads its saved snapshot without discovery', async () => {
     const h = harness();
     const markdown = '# Chosen page\n\nComplete fetched evidence.';
