@@ -13,7 +13,10 @@ RUN npx tsc
 FROM node:20-alpine
 WORKDIR /app
 
-RUN addgroup -g 1001 mcp && adduser -u 1001 -G mcp -s /bin/sh -D mcp
+RUN addgroup -g 1001 mcp \
+    && adduser -u 1001 -G mcp -s /bin/sh -D mcp \
+    && mkdir -p /app/logs \
+    && chown mcp:mcp /app/logs
 USER mcp
 
 COPY --from=build /app/dist ./dist
